@@ -11,6 +11,7 @@ import {
   MicOutline,
   PricetagOutline,
   SettingsOutline,
+  FlashOutline,
   StatsChartOutline,
 } from '@vicons/ionicons5'
 import { OPEN_AI_SETTINGS, FOCUS_BOARD, OPEN_RESUME_DETAIL, OPEN_OPPORTUNITY_DETAIL } from '../injectionKeys'
@@ -176,7 +177,7 @@ function onNavGo(page: string) {
         <div
           class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white shadow-[0_4px_12px_rgba(99,102,241,0.4)]"
         >
-          <span class="text-[17px] font-bold leading-none select-none">进</span>
+          <n-icon :component="FlashOutline" :size="19" />
         </div>
         <div class="hidden lg:block">
           <div class="text-[15px] font-bold leading-tight tracking-tight text-zinc-900">
