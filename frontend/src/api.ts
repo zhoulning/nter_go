@@ -4,6 +4,7 @@ import type {
   Opportunity,
   PredictionInfo,
   Question,
+  ResearchMaterial,
   ResearchNote,
   Resume,
   RoundEvent,
@@ -441,6 +442,27 @@ export const api = {
 
   deleteNote: (opportunityId: number, noteType: string) =>
     request<{ ok: boolean }>(`/opportunities/${opportunityId}/notes/${noteType}`, {
+      method: 'DELETE',
+    }),
+
+  listMaterials: (opportunityId: number) =>
+    request<{ items: ResearchMaterial[] }>(`/opportunities/${opportunityId}/materials`),
+
+  addMaterials: (
+    opportunityId: number,
+    payload: { urls: string[]; manual_text: string; manual_title: string },
+  ) =>
+    request<{
+      saved: ResearchMaterial[]
+      failed: { url: string; error: string }[]
+      duplicates: string[]
+    }>(`/opportunities/${opportunityId}/materials`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteMaterial: (opportunityId: number, materialId: number) =>
+    request<{ ok: boolean }>(`/opportunities/${opportunityId}/materials/${materialId}`, {
       method: 'DELETE',
     }),
 

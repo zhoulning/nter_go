@@ -254,7 +254,7 @@ function confirmDelete(q: Question) {
     <!-- 页头 -->
     <header class="fade-up flex flex-wrap items-end justify-between gap-4 px-7 pb-3 pt-6">
       <div>
-        <h1 class="text-[21px] font-bold tracking-tight text-zinc-900">题库 · 错题本</h1>
+        <h1 class="text-[21px] font-bold tracking-tight text-zinc-900">题库管理</h1>
         <p class="mt-1 text-[13px] text-zinc-400">
           共 {{ questions.length }} 题，其中错题 {{ wrongCount }} 道 · 点「答案详情」查看排版好的参考答案
         </p>

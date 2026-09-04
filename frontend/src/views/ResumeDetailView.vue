@@ -179,7 +179,7 @@ function fmtDate(dt: string): string {
         @click="emit('back')"
       >
         <n-icon :component="ArrowBackOutline" :size="14" />
-        返回简历库
+        返回简历管理
       </button>
 
       <div v-if="resume" class="flex flex-wrap items-center justify-between gap-4">
@@ -322,7 +322,7 @@ function fmtDate(dt: string): string {
     <div v-else-if="!resume" class="grid flex-1 place-items-center">
       <div class="text-center">
         <p class="text-[13px] text-zinc-400">简历不存在或已被删除</p>
-        <n-button quaternary class="mt-2" @click="emit('back')">返回简历库</n-button>
+        <n-button quaternary class="mt-2" @click="emit('back')">返回简历管理</n-button>
       </div>
     </div>
 

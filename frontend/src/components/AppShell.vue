@@ -10,7 +10,6 @@ import {
   HomeOutline,
   MicOutline,
   PricetagOutline,
-  RocketOutline,
   SettingsOutline,
   StatsChartOutline,
 } from '@vicons/ionicons5'
@@ -32,6 +31,8 @@ interface NavItem {
   label: string
   icon: Component
   ready?: boolean
+  /** 标记为 AI 能力，导航文案右上角显示 AI 上标 */
+  ai?: boolean
 }
 interface NavSection {
   title: string
@@ -130,14 +131,14 @@ const sections: NavSection[] = [
     items: [
       { key: 'home', label: '首页', icon: HomeOutline, ready: true },
       { key: 'board', label: '岗位跟踪', icon: GridOutline, ready: true },
+      { key: 'calendar', label: '面试日程', icon: CalendarOutline, ready: true },
     ],
   },
   {
     title: '面试准备',
     items: [
-      { key: 'calendar', label: '面试日历', icon: CalendarOutline, ready: true },
-      { key: 'questions', label: '题库 · 错题本', icon: BookOutline, ready: true },
-      { key: 'resumes', label: '简历库', icon: DocumentTextOutline, ready: true },
+      { key: 'questions', label: '题库管理', icon: BookOutline, ready: true, ai: true },
+      { key: 'resumes', label: '简历管理', icon: DocumentTextOutline, ready: true, ai: true },
     ],
   },
   {
@@ -175,7 +176,7 @@ function onNavGo(page: string) {
         <div
           class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white shadow-[0_4px_12px_rgba(99,102,241,0.4)]"
         >
-          <n-icon :component="RocketOutline" :size="19" />
+          <span class="text-[17px] font-bold leading-none select-none">进</span>
         </div>
         <div class="hidden lg:block">
           <div class="text-[15px] font-bold leading-tight tracking-tight text-zinc-900">
@@ -208,7 +209,13 @@ function onNavGo(page: string) {
               :size="16"
               :class="active === item.key ? 'text-indigo-500' : 'text-zinc-400'"
             />
-            <span class="hidden lg:inline">{{ item.label }}</span>
+            <span class="hidden items-center gap-1 lg:inline-flex">
+              {{ item.label }}
+              <span
+                v-if="item.ai"
+                class="-translate-y-[6px] rounded-[3px] bg-gradient-to-r from-indigo-500 to-violet-500 px-[3px] text-[8px] font-bold leading-[12px] text-white"
+              >AI</span>
+            </span>
           </button>
         </div>
       </nav>

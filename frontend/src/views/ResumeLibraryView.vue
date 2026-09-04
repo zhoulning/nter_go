@@ -151,7 +151,7 @@ function confirmDelete(r: Resume) {
     <!-- 页头 -->
     <header class="fade-up flex flex-wrap items-end justify-between gap-4 px-7 pb-3 pt-6">
       <div>
-        <h1 class="text-[21px] font-bold tracking-tight text-zinc-900">简历库</h1>
+        <h1 class="text-[21px] font-bold tracking-tight text-zinc-900">简历管理</h1>
         <p class="mt-1 text-[13px] text-zinc-400">
           {{ resumes.length }} 个版本 · 已抽取 {{ totalTextWords }} 字文本，供后续 AI 匹配度评估使用
         </p>
@@ -172,7 +172,7 @@ function confirmDelete(r: Resume) {
     <!-- 列表 -->
     <div class="min-h-0 flex-1 overflow-y-auto px-7 pb-6">
       <div v-if="loading" class="grid h-full place-items-center text-sm text-zinc-400">
-        正在加载简历库…
+        正在加载简历…
       </div>
       <div v-else-if="resumes.length === 0" class="grid h-full place-items-center">
         <div class="text-center">

@@ -260,7 +260,7 @@ async function submit() {
               filterable
               clearable
               :options="resumeOptions"
-              :placeholder="(props.resumes ?? []).length ? '选择简历版本，默认简历带 ★' : '请先到「简历库」上传'"
+              :placeholder="(props.resumes ?? []).length ? '选择简历版本，默认简历带 ★' : '请先到「简历管理」上传'"
               :disabled="!(props.resumes ?? []).length"
             />
           </n-form-item>

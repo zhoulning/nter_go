@@ -179,7 +179,7 @@ function resultChipClass(result: string): string {
     <!-- 页头 -->
     <header class="fade-up flex flex-wrap items-end justify-between gap-4 px-7 pb-3 pt-6">
       <div>
-        <h1 class="text-[21px] font-bold tracking-tight text-zinc-900">面试日历</h1>
+        <h1 class="text-[21px] font-bold tracking-tight text-zinc-900">面试日程</h1>
         <p class="mt-1 text-[13px] text-zinc-400">
           区间内共 {{ events.length }} 场面试 · 点击日期查看与排期
         </p>

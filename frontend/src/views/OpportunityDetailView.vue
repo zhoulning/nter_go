@@ -14,6 +14,7 @@ import type {
   OfferInfo,
   Opportunity,
   RecordingInfo,
+  ResearchMaterial,
   ResearchNote,
   Resume,
   RoundEvent,
@@ -56,12 +57,20 @@ const matchReport = ref<MatchReportInfo | null>(null)
 const recordings = ref<RecordingInfo[]>([])
 const offer = ref<OfferInfo | null>(null)
 
-// ---- 调研笔记 ----
+// ---- 岗位情报 ----
 const activeNoteType = ref('company')
 const noteEditing = ref(false)
 const noteDraft = ref('')
 const noteSaving = ref(false)
 const outlining = ref<string | null>(null)
+const materials = ref<ResearchMaterial[]>([])
+const materialModalShow = ref(false)
+const materialUrls = ref('')
+const materialManualText = ref('')
+const materialManualTitle = ref('')
+const fetchingMaterials = ref(false)
+// 一键生成进度：null = 未在生成
+const generateAll = ref<{ done: number; total: number } | null>(null)
 
 // ---- 匹配度 ----
 const matchResumeId = ref<number | null>(null)
@@ -87,16 +96,18 @@ async function load() {
     }
     opp.value = found
     matchResumeId.value = found.resume_id
-    const [noteData, matchData, recData, offerData] = await Promise.all([
+    const [noteData, matchData, recData, offerData, materialData] = await Promise.all([
       api.listNotes(found.id),
       api.getMatchReport(found.id),
       api.listRecordings(),
       api.listOffers(),
+      api.listMaterials(found.id),
     ])
     notes.value = noteData.items
     matchReport.value = matchData.report
     recordings.value = recData.items.filter((r) => r.opportunity_id === found.id)
     offer.value = offerData.items.find((o) => o.opportunity_id === found.id) ?? null
+    materials.value = materialData.items
   } catch (e) {
     message.error((e as Error).message || '加载失败')
   } finally {
@@ -197,6 +208,96 @@ function generateOutline() {
   } else {
     run(false)
   }
+}
+
+/** 一键生成全部板块（并行调用，已有内容直接覆盖） */
+async function generateAllNotes() {
+  if (!opp.value) return
+  const hasContent = NOTE_TYPE_META.some((m) => noteByType.value[m.key]?.content?.trim())
+  if (hasContent) {
+    dialog.warning({
+      title: '一键生成全部情报',
+      content: '已有内容的板块将被覆盖重新生成，确定继续？',
+      positiveText: '全部重新生成',
+      negativeText: '取消',
+      onPositiveClick: () => runGenerateAll(),
+    })
+  } else {
+    await runGenerateAll()
+  }
+}
+
+async function runGenerateAll() {
+  if (!opp.value) return
+  const types = NOTE_TYPE_META.map((m) => m.key)
+  generateAll.value = { done: 0, total: types.length }
+  const results = await Promise.allSettled(
+    types.map((t) => api.generateOutline(opp.value!.id, t, true)),
+  )
+  results.forEach((res, i) => {
+    if (res.status === 'fulfilled') {
+      const idx = notes.value.findIndex((n) => n.note_type === types[i])
+      if (idx >= 0) notes.value[idx] = res.value
+      else notes.value.push(res.value)
+    }
+    generateAll.value = { done: generateAll.value!.done + 1, total: types.length }
+  })
+  generateAll.value = null
+  const ok = results.filter((r) => r.status === 'fulfilled').length
+  if (ok === types.length) message.success('全部情报已生成')
+  else message.warning(`生成完成：${ok}/${types.length} 个板块成功`)
+}
+
+async function submitMaterials() {
+  if (!opp.value) return
+  const urls = materialUrls.value
+    .split('\n')
+    .map((u) => u.trim())
+    .filter(Boolean)
+  if (!urls.length && !materialManualText.value.trim()) {
+    message.warning('请填写链接或粘贴资料内容')
+    return
+  }
+  fetchingMaterials.value = true
+  try {
+    const res = await api.addMaterials(opp.value.id, {
+      urls,
+      manual_text: materialManualText.value,
+      manual_title: materialManualTitle.value,
+    })
+    materials.value = [...res.saved, ...materials.value]
+    materialModalShow.value = false
+    materialUrls.value = ''
+    materialManualText.value = ''
+    materialManualTitle.value = ''
+    const failNote = res.failed.length
+      ? `；${res.failed.length} 个失败：${res.failed[0].error}`
+      : ''
+    message.success(`已保存 ${res.saved.length} 份资料${failNote}`, { duration: 6000 })
+  } catch (e) {
+    message.error((e as Error).message || '抓取失败', { duration: 6000 })
+  } finally {
+    fetchingMaterials.value = false
+  }
+}
+
+function removeMaterial(m: ResearchMaterial) {
+  if (!opp.value) return
+  dialog.warning({
+    title: '删除资料',
+    content: `确定删除「${m.title}」这份参考资料吗？`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await api.deleteMaterial(opp.value!.id, m.id)
+        materials.value = materials.value.filter((x) => x.id !== m.id)
+        message.success('已删除')
+      } catch (e) {
+        message.error((e as Error).message || '删除失败')
+      }
+    },
+  })
 }
 
 // ---- 匹配度 ----
@@ -550,88 +651,135 @@ function deleteOpportunity() {
           </div>
         </n-tab-pane>
 
-        <!-- 调研笔记 -->
-        <n-tab-pane name="research" tab="调研笔记">
-          <div class="flex h-[calc(100vh-190px)] gap-4">
-            <!-- 左：类型列表 -->
-            <div class="flex w-[190px] shrink-0 flex-col gap-1.5 overflow-y-auto">
-              <button
-                v-for="meta in NOTE_TYPE_META"
-                :key="meta.key"
-                class="rounded-xl border px-3 py-2.5 text-left transition-colors"
-                :class="
-                  activeNoteType === meta.key
-                    ? 'border-indigo-200 bg-indigo-50/80'
-                    : 'border-transparent bg-white hover:border-zinc-200'
-                "
-                @click="switchNoteType(meta.key)"
-              >
-                <div class="flex items-center justify-between">
-                  <span
-                    class="text-[13px] font-semibold"
-                    :class="activeNoteType === meta.key ? 'text-indigo-600' : 'text-zinc-700'"
-                  >{{ meta.label }}</span>
-                  <span
-                    v-if="noteByType[meta.key]?.content"
-                    class="h-1.5 w-1.5 rounded-full bg-emerald-400"
-                    title="已有内容"
-                  />
-                </div>
-                <div class="mt-0.5 text-[11px] leading-snug text-zinc-400">{{ meta.hint }}</div>
-              </button>
+        <!-- 岗位情报 -->
+        <n-tab-pane name="research" tab="岗位情报">
+          <div class="flex h-[calc(100vh-190px)] flex-col gap-3">
+            <!-- 顶部工具栏 -->
+            <div class="flex shrink-0 items-center gap-2">
+              <n-button size="small" type="primary" :loading="generateAll !== null" @click="generateAllNotes">
+                <template #icon><n-icon :component="SparklesOutline" :size="14" /></template>
+                一键生成全部
+              </n-button>
+              <span v-if="generateAll" class="text-[12px] text-indigo-600">
+                生成中 {{ generateAll.done }}/{{ generateAll.total }}…
+              </span>
+              <span v-else class="text-[11.5px] text-zinc-400">并行生成五大板块，已有内容会被覆盖</span>
+              <n-button size="small" class="ml-auto" @click="materialModalShow = true">
+                <template #icon><n-icon :component="CloudDownloadOutline" :size="14" /></template>
+                抓取资料
+              </n-button>
             </div>
 
-            <!-- 右：编辑/查看 -->
-            <div class="flex min-w-0 flex-1 flex-col rounded-2xl border border-zinc-100 bg-white p-4">
-              <div class="mb-2 flex shrink-0 items-center gap-2">
-                <h3 class="text-[14px] font-semibold text-zinc-800">{{ currentNoteMeta?.label }}</h3>
-                <span
-                  v-if="currentNote?.ai_generated"
-                  class="rounded-md bg-violet-50 px-1.5 py-0.5 text-[10.5px] font-medium text-violet-600"
-                >AI 提纲</span>
-                <span v-if="currentNote?.updated_at" class="text-[11px] text-zinc-400">
-                  更新于 {{ new Date(currentNote.updated_at).toLocaleString() }}
-                </span>
-                <div class="ml-auto flex gap-2">
-                  <n-button
-                    size="small"
-                    type="primary"
-                    secondary
-                    :loading="outlining === activeNoteType"
-                    @click="generateOutline"
+            <div class="flex min-h-0 flex-1 gap-4">
+              <!-- 左：类型列表 + 参考资料 -->
+              <div class="flex w-[190px] shrink-0 flex-col gap-1.5 overflow-y-auto">
+                <button
+                  v-for="meta in NOTE_TYPE_META"
+                  :key="meta.key"
+                  class="rounded-xl border px-3 py-2.5 text-left transition-colors"
+                  :class="
+                    activeNoteType === meta.key
+                      ? 'border-indigo-200 bg-indigo-50/80'
+                      : 'border-transparent bg-white hover:border-zinc-200'
+                  "
+                  @click="switchNoteType(meta.key)"
+                >
+                  <div class="flex items-center justify-between">
+                    <span
+                      class="text-[13px] font-semibold"
+                      :class="activeNoteType === meta.key ? 'text-indigo-600' : 'text-zinc-700'"
+                    >{{ meta.label }}</span>
+                    <span
+                      v-if="noteByType[meta.key]?.content"
+                      class="h-1.5 w-1.5 rounded-full bg-emerald-400"
+                      title="已有内容"
+                    />
+                  </div>
+                  <div class="mt-0.5 text-[11px] leading-snug text-zinc-400">{{ meta.hint }}</div>
+                </button>
+
+                <!-- 参考资料 -->
+                <div class="mt-2 border-t border-zinc-100 pt-2">
+                  <div class="mb-1.5 px-1 text-[11.5px] font-semibold text-zinc-500">
+                    参考资料（{{ materials.length }}）
+                  </div>
+                  <div
+                    v-for="m in materials"
+                    :key="m.id"
+                    class="group mb-1 flex items-center gap-1.5 rounded-lg px-1.5 py-1 hover:bg-zinc-50"
                   >
-                    <template #icon><n-icon :component="SparklesOutline" :size="14" /></template>
-                    AI 生成提纲
-                  </n-button>
-                  <template v-if="noteEditing">
-                    <n-button size="small" @click="noteEditing = false">取消</n-button>
-                    <n-button size="small" type="primary" :loading="noteSaving" @click="saveNote">保存</n-button>
-                  </template>
-                  <n-button v-else size="small" @click="startEditNote">
-                    {{ currentNote?.content ? '编辑' : '手动编写' }}
-                  </n-button>
+                    <span
+                      class="shrink-0 rounded px-1 text-[10px] font-medium"
+                      :class="{
+                        'bg-sky-50 text-sky-600': m.source_type === 'url',
+                        'bg-violet-50 text-violet-600': m.source_type === 'browser',
+                        'bg-zinc-100 text-zinc-500': m.source_type === 'manual',
+                      }"
+                    >{{ m.source_type === 'manual' ? '粘贴' : '网页' }}</span>
+                    <span class="min-w-0 flex-1 truncate text-[11.5px] text-zinc-600" :title="m.title">{{ m.title }}</span>
+                    <span
+                      class="hidden shrink-0 cursor-pointer text-[11px] text-zinc-400 hover:text-rose-500 group-hover:inline"
+                      @click="removeMaterial(m)"
+                    >删</span>
+                  </div>
+                  <div v-if="!materials.length" class="px-1 text-[11px] leading-relaxed text-zinc-400">
+                    暂无资料。可粘贴公司相关链接（百科 / 官网 / 新闻）或文本，生成情报时会作为事实来源
+                  </div>
                 </div>
               </div>
 
-              <n-input
-                v-if="noteEditing"
-                v-model:value="noteDraft"
-                type="textarea"
-                placeholder="支持 Markdown：## 小节、- 列表、**加粗**"
-                class="min-h-0 flex-1"
-                :input-props="{ spellcheck: false }"
-              />
-              <template v-else-if="currentNote?.content">
-                <div class="min-h-0 flex-1 overflow-y-auto pr-1">
-                  <MarkdownView :source="currentNote.content" />
+              <!-- 右：编辑/查看 -->
+              <div class="flex min-w-0 flex-1 flex-col rounded-2xl border border-zinc-100 bg-white p-4">
+                <div class="mb-2 flex shrink-0 items-center gap-2">
+                  <h3 class="text-[14px] font-semibold text-zinc-800">{{ currentNoteMeta?.label }}</h3>
+                  <span
+                    v-if="currentNote?.ai_generated"
+                    class="rounded-md bg-violet-50 px-1.5 py-0.5 text-[10.5px] font-medium text-violet-600"
+                  >AI 生成</span>
+                  <span v-if="currentNote?.updated_at" class="text-[11px] text-zinc-400">
+                    更新于 {{ new Date(currentNote.updated_at).toLocaleString() }}
+                  </span>
+                  <div class="ml-auto flex gap-2">
+                    <n-button
+                      size="small"
+                      type="primary"
+                      secondary
+                      :loading="outlining === activeNoteType"
+                      @click="generateOutline"
+                    >
+                      <template #icon><n-icon :component="SparklesOutline" :size="14" /></template>
+                      AI 生成
+                    </n-button>
+                    <template v-if="noteEditing">
+                      <n-button size="small" @click="noteEditing = false">取消</n-button>
+                      <n-button size="small" type="primary" :loading="noteSaving" @click="saveNote">保存</n-button>
+                    </template>
+                    <n-button v-else size="small" @click="startEditNote">
+                      {{ currentNote?.content ? '编辑' : '手动编写' }}
+                    </n-button>
+                  </div>
                 </div>
-              </template>
-              <div v-else class="grid flex-1 place-items-center">
-                <div class="text-center">
-                  <p class="text-[12.5px] leading-relaxed text-zinc-400">
-                    还没有「{{ currentNoteMeta?.label }}」内容<br />
-                    用 AI 生成调研提纲，再逐条补充核实
-                  </p>
+
+                <n-input
+                  v-if="noteEditing"
+                  v-model:value="noteDraft"
+                  type="textarea"
+                  placeholder="支持 Markdown：## 小节、- 列表、**加粗**"
+                  class="min-h-0 flex-1"
+                  :input-props="{ spellcheck: false }"
+                />
+                <template v-else-if="currentNote?.content">
+                  <div class="min-h-0 flex-1 overflow-y-auto pr-1">
+                    <MarkdownView :source="currentNote.content" />
+                  </div>
+                </template>
+                <div v-else class="grid flex-1 place-items-center">
+                  <div class="text-center">
+                    <p class="text-[12.5px] leading-relaxed text-zinc-400">
+                      还没有「{{ currentNoteMeta?.label }}」内容<br />
+                      单独生成本板块，或点左上角「一键生成全部」
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -664,7 +812,7 @@ function deleteOpportunity() {
                   该岗位还没有工作描述，请先在「编辑」中补充 JD
                 </div>
                 <div v-else-if="!resumes.length" class="mt-4 rounded-xl bg-amber-50 px-3 py-2 text-[12px] text-amber-600">
-                  请先到「简历库」上传简历
+                  请先到「简历管理」上传简历
                 </div>
                 <template v-else>
                   <n-select

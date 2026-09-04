@@ -315,6 +315,18 @@ export const MATCH_VERDICT_ICON: Record<string, string> = {
 
 export const MATCH_WEIGHT_LABEL: Record<string, string> = { high: '高权重', mid: '中权重', low: '低权重' }
 
+// ---- 岗位情报参考材料 ----
+
+export interface ResearchMaterial {
+  id: number
+  source_type: 'url' | 'browser' | 'manual'
+  title: string
+  url: string | null
+  content: string
+  size: number
+  created_at: string
+}
+
 // ---- 题目预测 ----
 
 export interface PredictedQuestion {
