@@ -179,7 +179,7 @@ function onNavGo(page: string) {
         </div>
         <div class="hidden lg:block">
           <div class="text-[15px] font-bold leading-tight tracking-tight text-zinc-900">
-            Go面试
+            进击の面试
           </div>
           <div class="mt-0.5 text-[11px] leading-none text-zinc-400">面试跟踪管理 · v0.1</div>
         </div>

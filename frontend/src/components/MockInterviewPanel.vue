@@ -222,7 +222,7 @@ function fmtTime(dt: string): string {
           </n-button>
         </div>
         <p class="mt-2 text-[11px] leading-relaxed text-zinc-400">
-          面试官会按题单提问，可随时结束生成分析；已生成「题目预测」的轮次会优先使用该题单
+          面试官从题库随机选题、大类穿插，项目题开放式追问；可随时结束生成分析。已生成「题目预测」的轮次会以该题单为候选题库
         </p>
       </div>
 
@@ -462,7 +462,7 @@ function fmtTime(dt: string): string {
           </div>
           <div class="mt-3 text-[14px] font-semibold text-zinc-700">AI 模拟面试</div>
           <p class="mt-1 max-w-[380px] text-[12.5px] leading-relaxed text-zinc-400">
-            选择目标轮次开始一场模拟面试：AI 面试官按题单提问、根据你的回答追问或进入下一题；结束后生成逐题分析，对话与分析都会保存
+            选择目标轮次开始一场模拟面试：AI 面试官从题库随机选题、大类穿插推进，根据你的回答开放式追问；结束后生成逐题分析，对话与分析都会保存
           </p>
         </div>
       </div>

@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem Interview Go unified launcher (the ONLY supported way)
+rem unified launcher (the ONLY supported way)
 rem - Binds 0.0.0.0:8000 so LAN machines can reach it:
 rem   http://192.168.31.100:8000
 rem - Kills stale instances on port 8000 before starting
@@ -18,5 +18,5 @@ for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8000" ^| findstr "LISTENING
     taskkill /PID %%p /F >nul 2>&1
 )
 
-echo [start] Interview Go: http://127.0.0.1:8000  (LAN: http://192.168.31.100:8000)
+echo [start] http://127.0.0.1:8000  (LAN: http://192.168.31.100:8000)
 .venv\Scripts\python.exe run.py

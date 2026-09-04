@@ -3,6 +3,7 @@
 会话与对话记录、分析报告全部入库，可随时回看。
 """
 import json
+import random
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -31,7 +32,7 @@ TURN_PROMPT = """你正在扮演 {company} 的技术面试官（{round_label}）
 【本轮面试侧重】
 {round_emphasis}
 
-【本轮面试预定题库（按顺序出题，可按回答情况微调）】
+【本轮候选题库（顺序已打乱，仅供选题参考，禁止按列表顺序机械推进）】
 {question_pool}
 
 【目前对话记录】
@@ -51,6 +52,8 @@ TURN_PROMPT = """你正在扮演 {company} 的技术面试官（{round_label}）
 - 已提问数达到 {target} 题且当前无必须追问的点 → finish 收尾。
 - 一次只问一个问题，禁止一次抛出多个问题；message 中不要出现 JSON 或括号标记。
 - 候选人明确表示不知道 / 要求跳过 → 简单带过并 next；候选人要求结束面试 → finish。
+- 选题规则：进入新问题时，从候选题库中挑一个尚未问过、且考察维度与上一题不同的题目；八股 / 项目深挖 / 场景设计等大类要穿插进行，不要连续多题同属一类，更不要按简历章节或题库列表的顺序推进。
+- 项目深挖采用开放式提问：不必念题库原题，围绕简历中的任意项目自由切入（如个人贡献最大的点、最难的一次故障、如果重来会改哪个设计、两个方案的取舍对比），追问链根据候选人回答动态生成。
 - 候选人的回答很可能来自语音转文字，会混入同音字 / 术语错写（如「瑞迪斯」=Redis、「米等」=幂等、「锁」/「落」不分）：按上下文推断其本意来理解即可，不要纠缠错别字，更不要因转写错误而降分或反复追问文字问题。
 - 出题与追问深度要匹配薪资 / 年限对应的职级期望：目标薪资越高、年限越长，越应追问原理、线上实战与量化细节；初级岗则以基础为主，避免超纲。"""
 
@@ -142,7 +145,7 @@ def _interview_dict(row: MockInterview) -> dict:
 
 
 def _question_pool(session: Session, opportunity_id: int, round_type: str) -> str:
-    """优先使用题目预测的题单作为本轮题库；没有则提示 AI 自行根据 JD 出题。"""
+    """优先使用题目预测的题单作为本轮候选题库（顺序打乱）；没有则提示 AI 自行根据 JD 出题。"""
     pred = session.exec(
         select(Prediction).where(
             Prediction.opportunity_id == opportunity_id,
@@ -152,17 +155,21 @@ def _question_pool(session: Session, opportunity_id: int, round_type: str) -> st
     if pred is not None:
         try:
             data = json.loads(pred.report)
-            lines = []
-            for i, q in enumerate(data.get("questions", [])[:16], 1):
-                if q.get("group") == "反问建议":
-                    continue
-                lines.append(f"{i}. [{q.get('dimension', '')}] {q.get('q', '')}")
+            lines = [
+                f"- [{q.get('group', '')}·{q.get('dimension', '')}] {q.get('q', '')}"
+                for q in data.get("questions", [])[:16]
+                if q.get("group") != "反问建议"
+            ]
+            random.shuffle(lines)
             if lines:
-                return "\n".join(lines)
+                head = "（以下只是候选池，顺序随机，不代表提问顺序）"
+                return head + chr(10) + chr(10).join(lines)
         except (ValueError, TypeError):
             pass
-    return "（未生成预测题单，请根据 JD 与简历自行拟定 5-8 个由浅入深的问题）"
-
+    return (
+        "（未生成预测题单，请自行拟定 5-8 个候选问题：结合 JD 与简历自由设计，"
+        "不要按简历章节顺序组织，项目题保持开放式切入）"
+    )
 
 def _interviewer_turn(
     session: Session,
@@ -198,8 +205,13 @@ def _interviewer_turn(
     asked = sum(1 for t in transcript if t.get("role") == "interviewer" and t.get("action") in (None, "next"))
     target = 4 if interview.round_type == "hr" else 6
 
-    transcript_text = "\n".join(
-        f"{'面试官' if t.get('role') == 'interviewer' else '候选人'}：{t.get('content', '')[:1500]}"
+    transcript_text = chr(10).join(
+        (
+            ("面试官[" + t["dimension"] + "]" if t.get("dimension") else "面试官")
+            + "：" + t.get("content", "")[:1500]
+            if t.get("role") == "interviewer"
+            else "候选人：" + t.get("content", "")[:1500]
+        )
         for t in transcript
     )[-16000:] or "（还没有对话）"
 

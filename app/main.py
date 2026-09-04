@@ -1,4 +1,4 @@
-"""Go面试 后端入口。
+"""进击の面试 后端入口。
 
 - 开发模式：uvicorn app.main:app --reload（前端另起 vite dev server）
 - 使用模式：python run.py（托管 frontend/dist 静态资源并自动打开浏览器）
@@ -125,7 +125,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Go面试 API", version="0.1.1", lifespan=lifespan)
+app = FastAPI(title="进击の面试 API", version="0.1.1", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

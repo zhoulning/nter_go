@@ -227,6 +227,18 @@ class MatchReport(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.now)
 
 
+class ResearchMaterial(SQLModel, table=True):
+    """岗位情报的参考材料（抓取的网页 / 手动粘贴），AI 生成情报时作为事实来源。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    opportunity_id: int = Field(foreign_key="opportunity.id", index=True)
+    source_type: str = "url"       # url: 直抓 / browser: CDP 浏览器抓取 / manual: 手动粘贴
+    title: str = ""                # 页面标题或用户命名
+    url: Optional[str] = None
+    content: str = ""              # 正文文本（截断存储）
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
 class Prediction(SQLModel, table=True):
     """AI 题目预测题单（每个岗位 × 每个目标轮次一份，重新生成即覆盖）。"""
 
