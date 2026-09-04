@@ -1,0 +1,175 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+/* Naive UI Provider 组件会渲染 wrapper div，恢复高度链条 */
+.n-config-provider,
+.n-message-provider,
+.n-dialog-provider {
+  height: 100%;
+}
+
+body {
+  @apply antialiased;
+  background: #f5f6f8;
+  color: #27272a;
+  font-family: Inter, 'Noto Sans SC', -apple-system, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d7dae0;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b9bdc7;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 顶部统计小胶囊 */
+.stat-chip {
+  @apply inline-flex items-center gap-1.5 rounded-full border border-zinc-200/80 bg-white px-3 py-[5px] text-[12px] text-zinc-600;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+.stat-chip .dot {
+  @apply h-1.5 w-1.5 rounded-full;
+}
+
+/* 渐变主按钮 */
+.btn-gradient {
+  @apply inline-flex items-center gap-1.5 rounded-xl px-4 text-[13px] font-semibold text-white;
+  height: 34px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+  transition: all 0.2s ease;
+}
+.btn-gradient:hover {
+  filter: brightness(1.07);
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.45);
+  transform: translateY(-1px);
+}
+.btn-gradient:active {
+  transform: translateY(0);
+}
+
+/* 筛选多选框：标签单行收纳，超出折叠为 +N，不允许换行撑高 */
+.filter-select .n-base-selection-tags {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.filter-select .n-base-selection-tag-wrapper {
+  flex-shrink: 0;
+}
+
+/* 视图切换分段控件 */
+.seg {
+  @apply inline-flex rounded-xl bg-zinc-200/60 p-1;
+}
+.seg button {
+  @apply inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-[12.5px] font-medium text-zinc-500 transition-all;
+}
+.seg button:hover {
+  @apply text-zinc-700;
+}
+.seg button.active {
+  @apply bg-white text-zinc-900;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.1);
+}
+
+/* 详情页下划线式页签 */
+.detail-tabs {
+  @apply flex items-center gap-1 border-b border-zinc-200/80 px-1;
+}
+.detail-tab {
+  @apply relative flex items-center gap-1.5 px-3 py-2.5 text-[13px] font-medium text-zinc-500 transition-colors;
+}
+.detail-tab:hover {
+  @apply text-zinc-800;
+}
+.detail-tab.active {
+  @apply text-indigo-600;
+}
+.detail-tab.active::after {
+  content: '';
+  @apply absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-indigo-500;
+}
+.tab-chip {
+  @apply rounded-full px-1.5 py-px text-[10.5px] font-semibold leading-[16px];
+}
+
+/* 日历单元格状态 */
+.cal-selected {
+  background: #eef2ff;
+}
+.cal-today {
+  background: #f6f7ff;
+}
+.cal-dim {
+  background: #fafafa;
+}
+.cal-dim .cell-num {
+  color: #c8c9cf;
+}
+
+/* 看板列拖拽悬停高亮 */
+.column-drag-over {
+  background: #e3e6f5 !important;
+  box-shadow: inset 0 0 0 2px rgba(99, 102, 241, 0.4);
+}
+
+/* 拖拽中的卡片 */
+.card-dragging {
+  opacity: 0.45;
+  transform: rotate(1.5deg) scale(0.98);
+}
+
+/* 卡片列表过渡 */
+.card-move {
+  transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.card-enter-active {
+  transition: all 0.22s ease;
+}
+.card-enter-from {
+  opacity: 0;
+  transform: translateY(8px) scale(0.97);
+}
+.card-leave-active {
+  display: none;
+}
+
+/* 进场动画 */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.fade-up {
+  animation: fadeUp 0.4s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.fade-up-d1 {
+  animation: fadeUp 0.4s 0.06s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}

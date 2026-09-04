@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Interview Go · 导航结构调整（标准版）</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", -apple-system, "Segoe UI", sans-serif;
+    background: #f4f4f5;
+    padding: 30px 36px;
+    width: 1420px;
+    color: #18181b;
+  }
+  .head { margin-bottom: 22px; }
+  .head h1 { font-size: 19px; font-weight: 800; letter-spacing: -0.2px; }
+  .head p { font-size: 12.5px; color: #71717a; margin-top: 5px; }
+
+  .layout { display: flex; gap: 28px; align-items: flex-start; }
+
+  /* ============ 左：应用框架 + 侧边栏 ============ */
+  .app-frame {
+    width: 420px; flex-shrink: 0; background: #fff; border-radius: 12px;
+    border: 1px solid #e4e4e7; overflow: hidden;
+    display: flex; height: 620px;
+  }
+  .side {
+    width: 208px; flex-shrink: 0; border-right: 1px solid #f0f0f2;
+    padding: 16px 10px 12px; display: flex; flex-direction: column; background: #fff;
+  }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 0 8px 16px; }
+  .brand .logo {
+    width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    display: grid; place-items: center;
+    box-shadow: 0 3px 10px rgba(99,102,241,.35);
+  }
+  .brand .name { font-size: 13.5px; font-weight: 700; letter-spacing: -0.2px; }
+  .brand .desc { font-size: 10px; color: #a1a1aa; margin-top: 1px; }
+
+  .sec-title { font-size: 10.5px; font-weight: 600; color: #a1a1aa; padding: 0 10px; margin: 12px 0 4px; }
+  .sec-title:first-of-type { margin-top: 2px; }
+
+  .nav-item {
+    display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 7px;
+    font-size: 12.5px; color: #52525b; margin-bottom: 1px;
+  }
+  .nav-item svg { width: 14px; height: 14px; stroke: #a1a1aa; flex-shrink: 0; }
+  .nav-item.active { background: #eef2ff; color: #4f46e5; font-weight: 600; }
+  .nav-item.active svg { stroke: #4f46e5; }
+
+  .side-bottom { margin-top: auto; border-top: 1px solid #f4f4f5; padding-top: 8px; }
+
+  /* 主区占位（示意，非重点） */
+  .main { flex: 1; background: #fafafa; padding: 18px; }
+  .main .ph-title { font-size: 15px; font-weight: 700; color: #3f3f46; }
+  .main .ph-sub { font-size: 11px; color: #a1a1aa; margin-top: 4px; }
+  .main .cols { display: flex; gap: 10px; margin-top: 14px; }
+  .main .col { flex: 1; background: #f1f1f3; border-radius: 8px; height: 90px; }
+  .main .col h5 { font-size: 10.5px; color: #71717a; text-align: center; padding-top: 8px; font-weight: 600; }
+
+  /* ============ 右：说明面板 ============ */
+  .right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+  .panel {
+    background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 18px 22px;
+  }
+  .panel h2 { font-size: 14px; font-weight: 700; }
+  .panel .cap { font-size: 12px; color: #71717a; margin-top: 6px; line-height: 1.7; }
+
+  .tabs-old { display: flex; gap: 6px; margin: 14px 0 10px; align-items: center; flex-wrap: wrap; }
+  .tabs-old .lead { font-size: 11px; color: #a1a1aa; font-weight: 600; margin-right: 2px; }
+  .tabs-old .t {
+    font-size: 11px; color: #a1a1aa; background: #fafafa; border: 1px dashed #d4d4d8;
+    padding: 3px 9px; border-radius: 6px;
+  }
+  .tabs-new { display: flex; gap: 2px; border-bottom: 2px solid #f4f4f5; }
+  .tabs-new .t { font-size: 12.5px; padding: 8px 15px 9px; color: #71717a; position: relative; }
+  .tabs-new .t.on { color: #4f46e5; font-weight: 700; }
+  .tabs-new .t.on::after {
+    content: ""; position: absolute; left: 12px; right: 12px; bottom: -2px; height: 2.5px;
+    border-radius: 2px; background: #6366f1;
+  }
+  .subtabs { display: flex; gap: 8px; margin: 12px 0 2px 4px; }
+  .subtabs .s {
+    font-size: 11px; padding: 4px 12px; border-radius: 99px; background: #f4f4f5; color: #52525b;
+  }
+  .subtabs .s.on { background: #4f46e5; color: #fff; font-weight: 600; }
+
+  .changes { margin: 0; padding: 0; list-style: none; }
+  .changes li {
+    font-size: 12.5px; color: #3f3f46; line-height: 1.8; padding-left: 20px; position: relative;
+  }
+  .changes li::before {
+    content: ""; position: absolute; left: 4px; top: 9px; width: 6px; height: 6px;
+    border-radius: 99px; background: #6366f1;
+  }
+  .changes b { font-weight: 700; }
+  .changes .dim { color: #a1a1aa; text-decoration: line-through; }
+</style>
+</head>
+<body>
+
+  <div class="head">
+    <h1>Interview Go · 导航结构调整（标准版）</h1>
+    <p>命名与层级保持常规后台风格，只做结构归位：进度类聚在一组、准备类聚在一组、详情页 7 个 Tab 收成 4 个。不新增页面、不减少功能。</p>
+  </div>
+
+  <div class="layout">
+
+    <!-- 应用示意 -->
+    <div class="app-frame">
+      <div class="side">
+        <div class="brand">
+          <div class="logo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15">
+              <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
+              <path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
+              <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
+              <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+            </svg>
+          </div>
+          <div>
+            <div class="name">Interview Go</div>
+            <div class="desc">面试跟踪管理 · v0.1</div>
+          </div>
+        </div>
+
+        <div class="sec-title">工作台</div>
+        <div class="nav-item active">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          首页
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+          岗位跟踪
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          面试日历
+        </div>
+
+        <div class="sec-title">面试准备</div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          题库 · 错题本
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          简历库
+        </div>
+
+        <div class="sec-title">复盘与决策</div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+          面试复盘
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
+          统计漏斗
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.83z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+          Offer 对比
+        </div>
+
+        <div class="side-bottom">
+          <div class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            设置
+          </div>
+        </div>
+      </div>
+
+      <div class="main">
+        <div class="ph-title">首页</div>
+        <div class="ph-sub">内容区示意（不变）</div>
+        <div class="cols">
+          <div class="col"><h5>未来 7 天面试</h5></div>
+          <div class="col"><h5>待办提醒</h5></div>
+        </div>
+        <div class="cols">
+          <div class="col"><h5>统计卡片</h5></div>
+          <div class="col"><h5>最近更新</h5></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 说明 -->
+    <div class="right">
+
+      <div class="panel">
+        <h2>侧边栏：只调整一处归属，命名全部保持原样</h2>
+        <ul class="changes" style="margin-top:10px">
+          <li><b>「面试日历」从「面试准备」移到「工作台」</b>：排期属于进度跟踪，与首页、岗位跟踪同类；「面试准备」组只剩题库与简历库，含义更纯粹。</li>
+          <li><b>其余全部不动</b>：分组仍为三组，「复盘与决策」（面试复盘 / 统计漏斗 / Offer 对比）保持现状。</li>
+          <li>调整后三组含义：工作台＝<b>进度</b>，面试准备＝<b>资料</b>，复盘与决策＝<b>结果</b>。</li>
+        </ul>
+      </div>
+
+      <div class="panel">
+        <h2>岗位详情页：7 个并列 Tab 收成 4 个</h2>
+        <div class="tabs-old">
+          <span class="lead">现状：</span>
+          <span class="t">概览</span><span class="t">调研笔记</span><span class="t">匹配度</span><span class="t">题目预测</span><span class="t">模拟面试</span><span class="t">轮次与录音</span><span class="t">Offer</span>
+        </div>
+        <div class="tabs-new">
+          <div class="t">概览</div>
+          <div class="t on">面试准备</div>
+          <div class="t">轮次与录音</div>
+          <div class="t">Offer</div>
+        </div>
+        <div class="subtabs">
+          <div class="s on">调研笔记</div>
+          <div class="s">匹配度</div>
+          <div class="s">题目预测</div>
+          <div class="s">模拟面试</div>
+        </div>
+        <div class="cap">调研笔记、匹配度、题目预测、模拟面试四个 AI 准备类 Tab 收进「面试准备」一个一级 Tab，内部用二级页签切换；功能不变，一层导航从 7 降到 4，顺序即工作流：概览 → 准备 → 过程 → 结果。</div>
+      </div>
+
+      <div class="panel">
+        <h2>不改的部分</h2>
+        <ul class="changes" style="margin-top:10px">
+          <li>各页面内部功能、看板 / 列表双视图、URL 直达（<b>?page=</b>）全部保持不变。</li>
+          <li>不新增聚合页、不加徽标、不改词条命名。</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>
