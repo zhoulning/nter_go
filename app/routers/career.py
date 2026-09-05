@@ -1,7 +1,7 @@
 """职业画像 / 职业方向档案 API。
 
-方向档案与当前方向全局共享（所有用户的 AI 功能按同一方向出题）；
-画像属于内置管理员（admin）本人，仅其可读写与 AI 生成。
+方向档案与当前方向全局共享（所有用户的 AI 功能按同一方向出题），切换仅限内置管理员；
+职业画像每位用户一份（自己读写），设置默认简历时自动重生成。
 """
 from typing import Optional
 
@@ -128,46 +128,42 @@ def _clean_profile(data: dict) -> dict:
     return profile
 
 
+def _profile_payload(session: Session, user: User) -> dict:
+    return {**get_profile(session, user), "custom_dimensions": get_custom_dimensions(session)}
+
+
 @router.get("/career/profile")
 def read_profile(
     session: Session = Depends(get_session),
-    user: User = Depends(require_builtin_admin),
+    user: User = Depends(get_current_user),
 ):
-    return get_profile(session)
+    """当前登录用户自己的职业画像。"""
+    return _profile_payload(session, user)
 
 
 @router.put("/career/profile")
 def save_profile(
     body: ProfileUpdate,
     session: Session = Depends(get_session),
-    user: User = Depends(require_builtin_admin),
+    user: User = Depends(get_current_user),
 ):
-    profile = get_profile(session)
+    profile = get_profile(session, user)
     patch = body.model_dump(exclude_none=True)
     if "track_key" in patch and patch["track_key"] and get_track(patch["track_key"]) is None:
         raise HTTPException(status_code=404, detail="职业方向不存在")
     profile.update(_clean_profile(patch))
-    set_profile(session, profile)
+    set_profile(session, user, profile)
     session.commit()
-    log_action(session, "career.profile", user=user, target="update")
-    session.commit()
-    return profile
+    return _profile_payload(session, user)
 
 
-@router.post("/career/profile/generate")
-def generate_profile(
-    body: ProfileGenerateRequest,
-    session: Session = Depends(get_session),
-    user: User = Depends(require_builtin_admin),
-):
-    """从简历 AI 生成职业画像：指定简历优先，否则默认简历。生成后直接落库。"""
-    cfg = get_ai_config(session)
-    if not cfg["api_key"]:
-        raise HTTPException(status_code=400, detail="尚未配置 AI API Key，请先到「设置」中填写")
-
+def _pick_profile_resume(
+    session: Session, user: User, resume_id: Optional[int]
+) -> Resume:
+    """画像取材简历：指定简历优先（校验归属），否则用户默认简历，否则最近一份。"""
     resume: Resume | None = None
-    if body.resume_id is not None:
-        resume = session.get(Resume, body.resume_id)
+    if resume_id is not None:
+        resume = session.get(Resume, resume_id)
         if resume is None or resume.user_id != user.id:
             raise HTTPException(status_code=404, detail="简历不存在")
     if resume is None:
@@ -178,9 +174,23 @@ def generate_profile(
         ).first()
     if resume is None:
         raise HTTPException(status_code=400, detail="还没有简历，请先到「简历库」上传")
-    content = (resume.structured or resume.text or "").strip()
-    if not content:
+    if not (resume.structured or resume.text or "").strip():
         raise HTTPException(status_code=400, detail="该简历没有文本内容，请重新上传 PDF / DOCX")
+    return resume
+
+
+def generate_profile_for_user(
+    session: Session, user: User, resume_id: Optional[int] = None
+) -> dict:
+    """从简历 AI 生成该用户的职业画像并落库；返回清洗后的画像 dict。
+
+    供两处复用：手动生成接口、设置默认简历后的后台重生成线程。
+    """
+    cfg = get_ai_config(session)
+    if not cfg["api_key"]:
+        raise HTTPException(status_code=400, detail="尚未配置 AI API Key，请先到「设置」中填写")
+    resume = _pick_profile_resume(session, user, resume_id)
+    content = (resume.structured or resume.text or "").strip()
 
     options = "\n".join(f"- {t['key']}：{t['name']}（{t['tagline']}）" for t in list_tracks())
     prompt = PROFILE_PROMPT.replace("{track_options}", options).replace("{content}", content[:12000])
@@ -191,11 +201,20 @@ def generate_profile(
     profile = _clean_profile(data)
     if profile["track_key"] and get_track(profile["track_key"]) is None:
         profile["track_key"] = ""
-    set_profile(session, profile)
-    session.commit()
-    log_action(session, "career.profile", user=user, target="generate", detail=resume.name)
+    set_profile(session, user, profile)
     session.commit()
     return profile
+
+
+@router.post("/career/profile/generate")
+def generate_profile(
+    body: ProfileGenerateRequest,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """从简历手动生成画像：指定简历优先，否则默认简历。生成后直接落库。"""
+    generate_profile_for_user(session, user, body.resume_id)
+    return _profile_payload(session, user)
 
 
 @router.put("/career/dimensions")
@@ -220,5 +239,5 @@ def career_context(
     """当前方向 + 画像文本（AI 相关功能注入用）。"""
     return {
         "current_key": get_current_track(session)["key"],
-        "profile_text": build_profile_text(session),
+        "profile_text": build_profile_text(session, user),
     }

@@ -18,6 +18,7 @@ from app.models import InterviewRound, Opportunity, Recording, ReviewReport, Res
 from app.review import build_review, polish_transcript
 from app.routers.ai import _call_llm, _parse_json_loose
 from app.routers.settings import get_ai_config, get_asr_config
+from app.tracks import build_profile_text, get_current_track
 
 router = APIRouter()
 
@@ -496,6 +497,7 @@ def _review_worker(
         else:
             kb_text = "（未配置知识库或未检索到相关笔记，忽略本节）"
 
+        track = get_current_track(session)
         report = build_review(
             base_url, model, api_key,
             company=opp.company,
@@ -505,6 +507,8 @@ def _review_worker(
             resume_text=resume_text,
             transcript=(rec.transcript_clean or rec.transcript) or "",
             kb_text=kb_text,
+            dim_examples=track["dim_examples"],
+            profile_text=build_profile_text(session, user),
         )
 
         existing = session.exec(
@@ -573,7 +577,13 @@ def _polish_worker(recording_id: int, base_url: str, model: str, api_key: str) -
     session = Session(engine)
     try:
         rec = session.get(Recording, recording_id)
-        polished = polish_transcript(base_url, model, api_key, rec.transcript or "")
+        polished = polish_transcript(
+            base_url,
+            model,
+            api_key,
+            rec.transcript or "",
+            typo_fixes=get_current_track(session)["typo_fixes"],
+        )
         rec = session.get(Recording, recording_id)
         rec.transcript_clean = polished
         rec.polished_at = datetime.now()

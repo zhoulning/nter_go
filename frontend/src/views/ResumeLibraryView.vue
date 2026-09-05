@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, reactive, ref } from 'vue'
+import { computed, h, inject, onMounted, reactive, ref } from 'vue'
 import { useDialog, useMessage } from 'naive-ui'
 import type { UploadCustomRequestOptions } from 'naive-ui'
 import { CloudUploadOutline } from '@vicons/ionicons5'
 import { api } from '../api'
-import type { Resume } from '../types'
+import type { Resume, ResumeUsage } from '../types'
 import { OPEN_RESUME_DETAIL } from '../injectionKeys'
 
 const message = useMessage()
@@ -48,7 +48,7 @@ async function setDefault(r: Resume) {
 async function load() {
   loading.value = true
   try {
-    const data = await api.listResumes()
+    const data = await api.listResumes(true)
     resumes.value = data.items
   } catch (e) {
     message.error((e as Error).message || '加载失败')
@@ -127,22 +127,91 @@ async function saveEdit() {
   }
 }
 
-function confirmDelete(r: Resume) {
+async function confirmDelete(r: Resume) {
+  let totals: ResumeUsage['totals'] | null = null
+  try {
+    totals = (await api.getResumeUsage(r.id)).totals
+  } catch {
+    /* 查不到引用信息不阻塞删除 */
+  }
+  const n = totals ? totals.opportunities + totals.questions + totals.match_reports + totals.review_reports : 0
+  const parts: string[] = []
+  if (totals) {
+    if (totals.opportunities) parts.push(`${totals.opportunities} 个岗位`)
+    if (totals.questions) parts.push(`${totals.questions} 道题`)
+    if (totals.match_reports) parts.push(`${totals.match_reports} 份匹配报告`)
+    if (totals.review_reports) parts.push(`${totals.review_reports} 份复盘报告`)
+  }
   dialog.warning({
     title: '删除简历',
-    content: `确定删除「${r.name}」吗？文件也会一并删除。`,
+    content: () =>
+      h('div', { class: 'text-[13px] leading-6' }, [
+        h('p', `确定删除「${r.name}」吗？文件也会一并删除。`),
+        n > 0
+          ? h('p', { class: 'mt-1 text-amber-600' }, `它当前被引用：${parts.join('、')}。删除后这些引用会被解除（置为「未关联简历」）。若只想让它退出选择器、保留历史关联，建议改用「归档」。`)
+          : null,
+      ]),
     positiveText: '删除',
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
         await api.deleteResume(r.id)
         message.success('已删除')
+        usageShow.value = false
         await load()
       } catch (e) {
         message.error((e as Error).message || '删除失败')
       }
     },
   })
+}
+
+// ---- 引用一览 ----
+const usageShow = ref(false)
+const usageLoading = ref(false)
+const usage = ref<ResumeUsage | null>(null)
+const usageTotals = computed(() => {
+  const t = usage.value?.totals
+  if (!t) return null
+  const n = t.opportunities + t.questions + t.match_reports + t.review_reports
+  return n > 0 ? t : null
+})
+const usageSummaryText = computed(() => {
+  const t = usageTotals.value
+  if (!t) return ''
+  const parts: string[] = []
+  if (t.opportunities) parts.push(`${t.opportunities} 个岗位`)
+  if (t.questions) parts.push(`${t.questions} 道题`)
+  if (t.match_reports) parts.push(`${t.match_reports} 份匹配报告`)
+  if (t.review_reports) parts.push(`${t.review_reports} 份复盘报告`)
+  return parts.join('、')
+})
+
+async function openUsage(r: Resume) {
+  usageShow.value = true
+  usageLoading.value = true
+  usage.value = null
+  try {
+    usage.value = await api.getResumeUsage(r.id)
+  } catch (e) {
+    message.error((e as Error).message || '加载引用信息失败')
+    usageShow.value = false
+  } finally {
+    usageLoading.value = false
+  }
+}
+
+async function toggleArchive(r: Resume) {
+  try {
+    await api.archiveResume(r.id, !r.archived)
+    message.success(r.archived ? `已取消归档「${r.name}」` : `已归档「${r.name}」，它不再出现在各处简历选择器中`)
+    if (usageShow.value && usage.value?.resume.id === r.id) {
+      usage.value.resume.archived = !r.archived
+    }
+    await load()
+  } catch (e) {
+    message.error((e as Error).message || '操作失败')
+  }
 }
 </script>
 
@@ -207,6 +276,12 @@ function confirmDelete(r: Resume) {
                 默认
               </span>
               <span
+                v-if="r.archived"
+                class="shrink-0 rounded-md bg-zinc-100 px-1.5 py-0.5 text-[10.5px] font-medium text-zinc-500"
+              >
+                已归档
+              </span>
+              <span
                 v-if="r.structured"
                 class="shrink-0 rounded-md bg-violet-50 px-1.5 py-0.5 text-[10.5px] font-medium text-violet-600"
               >
@@ -234,6 +309,7 @@ function confirmDelete(r: Resume) {
             class="flex shrink-0 items-center gap-1 max-md:w-full max-md:flex-wrap max-md:justify-end max-md:border-t max-md:border-zinc-100 max-md:pt-1.5"
             @click.stop
           >
+            <n-button size="tiny" quaternary @click="openUsage(r)">引用</n-button>
             <n-button size="tiny" quaternary type="primary" @click="openResumeDetail?.(r.id)">
               查看
             </n-button>
@@ -260,6 +336,14 @@ function confirmDelete(r: Resume) {
               <n-button size="tiny" quaternary type="primary">下载</n-button>
             </a>
             <n-button size="tiny" quaternary @click="openEdit(r)">编辑</n-button>
+            <n-button
+              v-if="!r.is_default"
+              size="tiny"
+              quaternary
+              @click="toggleArchive(r)"
+            >
+              {{ r.archived ? '取消归档' : '归档' }}
+            </n-button>
             <n-button size="tiny" quaternary type="error" @click="confirmDelete(r)">删除</n-button>
           </div>
         </article>
@@ -297,6 +381,99 @@ function confirmDelete(r: Resume) {
         <div class="mt-4 flex justify-end gap-2.5">
           <n-button quaternary @click="editShow = false">取消</n-button>
           <n-button type="primary" class="!px-5" :loading="editSaving" @click="saveEdit">保存</n-button>
+        </div>
+      </div>
+    </n-modal>
+    <!-- 引用一览弹窗 -->
+    <n-modal :show="usageShow" transform-origin="center" @update:show="usageShow = $event">
+      <div class="edit-card !w-[520px] max-md:!w-full">
+        <div class="mb-3 flex items-center justify-between gap-2">
+          <h2 class="text-[16px] font-bold text-zinc-900">
+            引用一览<span v-if="usage" class="ml-2 text-[13px] font-normal text-zinc-400">{{ usage.resume.name }}</span>
+          </h2>
+          <n-button size="tiny" quaternary @click="usageShow = false">关闭</n-button>
+        </div>
+        <div v-if="usageLoading" class="py-10 text-center text-[13px] text-zinc-400">加载中…</div>
+        <div v-else-if="usage" class="flex flex-col gap-4">
+          <p class="text-[12.5px] text-zinc-500">
+            {{ usageSummaryText ? `这版简历被引用：${usageSummaryText}。` : '这版简历还没有被任何岗位、题目或报告引用。' }}
+          </p>
+
+          <div v-if="usage.opportunities.length">
+            <div class="mb-1.5 text-[12.5px] font-semibold text-zinc-600">投递岗位（{{ usage.opportunities.length }}）</div>
+            <div class="flex flex-col gap-1">
+              <div
+                v-for="o in usage.opportunities"
+                :key="o.id"
+                class="flex items-center justify-between gap-2 rounded-lg bg-zinc-50 px-2.5 py-1.5 text-[12.5px]"
+              >
+                <span class="truncate">{{ o.company }} · {{ o.position }}</span>
+                <span class="shrink-0 text-zinc-400">{{ o.status }}<template v-if="o.rounds.length"> · {{ o.rounds.length }} 轮</template></span>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="usage.questions.length">
+            <div class="mb-1.5 text-[12.5px] font-semibold text-zinc-600">关联题目（{{ usage.questions.length }}）</div>
+            <div class="flex max-h-40 flex-col gap-1 overflow-y-auto">
+              <div
+                v-for="q in usage.questions.slice(0, 20)"
+                :key="q.id"
+                class="truncate rounded-lg bg-zinc-50 px-2.5 py-1.5 text-[12.5px] text-zinc-600"
+              >
+                {{ q.content }}
+              </div>
+              <div v-if="usage.questions.length > 20" class="px-2.5 text-[11.5px] text-zinc-400">
+                …共 {{ usage.questions.length }} 道
+              </div>
+            </div>
+          </div>
+
+          <div v-if="usage.match_reports.length">
+            <div class="mb-1.5 text-[12.5px] font-semibold text-zinc-600">匹配度报告（{{ usage.match_reports.length }}）</div>
+            <div class="flex flex-col gap-1">
+              <div
+                v-for="m in usage.match_reports"
+                :key="m.id"
+                class="flex items-center justify-between gap-2 rounded-lg bg-zinc-50 px-2.5 py-1.5 text-[12.5px]"
+              >
+                <span class="truncate">{{ m.company ?? `岗位 #${m.opportunity_id}` }}</span>
+                <span class="shrink-0 text-zinc-400">匹配 {{ m.total_score }} 分</span>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="usage.review_reports.length">
+            <div class="mb-1.5 text-[12.5px] font-semibold text-zinc-600">录音复盘报告（{{ usage.review_reports.length }}）</div>
+            <div class="flex flex-col gap-1">
+              <div
+                v-for="v in usage.review_reports"
+                :key="v.id"
+                class="flex items-center justify-between gap-2 rounded-lg bg-zinc-50 px-2.5 py-1.5 text-[12.5px]"
+              >
+                <span class="truncate">{{ v.recording_name ?? `录音 #${v.recording_id}` }}</span>
+                <span class="shrink-0 text-zinc-400">总评 {{ v.overall_score }} 分</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-2.5 border-t border-zinc-100 pt-3">
+            <n-button
+              v-if="!usage.resume.is_default"
+              size="small"
+              @click="toggleArchive(resumes.find((x) => x.id === usage!.resume.id) ?? ({ ...usage.resume } as Resume))"
+            >
+              {{ usage.resume.archived ? '取消归档' : '归档' }}
+            </n-button>
+            <n-button
+              size="small"
+              type="error"
+              secondary
+              @click="confirmDelete(resumes.find((x) => x.id === usage!.resume.id) ?? ({ ...usage.resume } as Resume))"
+            >
+              删除
+            </n-button>
+          </div>
         </div>
       </div>
     </n-modal>

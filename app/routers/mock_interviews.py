@@ -19,9 +19,10 @@ from app.routers.ai import (
     _call_llm,
     _parse_json_loose,
 )
-from app.routers.predictions import ROUND_EMPHASIS, ROUND_LABELS
+from app.routers.predictions import ROUND_LABELS
 from app.kb import search_knowledge_base
 from app.routers.settings import get_ai_config
+from app.tracks import build_profile_text, get_current_track
 
 router = APIRouter()
 
@@ -32,6 +33,9 @@ TURN_PROMPT = """你正在扮演 {company} 的技术面试官（{round_label}）
 【城市 / 薪资范围】{city} · {salary_range}
 【JD 要点】
 {jd}
+
+【候选人职业画像】（交叉技术背景，提问侧重参考它；为「（未设置）」则忽略本节）
+{profile_block}
 
 【候选人简历摘要】
 {resume}
@@ -54,12 +58,12 @@ TURN_PROMPT = """你正在扮演 {company} 的技术面试官（{round_label}）
 {{
   "message": "面试官的口语化发言。对上一个回答简短点评一句（如「嗯，了解」/「这个说法有点问题」），然后：追问时提出追问问题；next 时自然过渡并抛出下一个新问题；finish 时做收尾致谢。",
   "action": "followup|next|finish",
-  "dimension": "当前问题所属维度（如 MySQL / 项目深挖 / 系统设计）"
+  "dimension": "当前问题所属维度（如 {dim_examples}）"
 }}
 
 规则：
 - 判断标准：上一条回答有明显含糊、矛盾或值得深挖的点 → followup 追问（每个问题最多追问 1 次，不要连环追问）；回答完整或无需深挖 → next 进入题库下一个问题。
-- 量化结果的追问只适用于项目 / 场景 / 系统设计类回答：候选人主动提到数据可顺势问一句来由。纯八股 / 原理 / 对比类问题（如 Redis 持久化、索引为什么用 B+ 树）答到点上即算完整，不要追问「放到你的项目里效果如何 / 有没有量化指标」——不是每个知识点都能落到候选人的项目上，硬要数字既不真实也无必要；这类题值得深挖时优先问原理与机制本身（底层实现、边界条件、方案取舍）。
+- 量化结果的追问只适用于项目 / 场景 / 系统设计类回答：候选人主动提到数据可顺势问一句来由。纯八股 / 原理 / 对比类问题答到点上即算完整，不要追问「放到你的项目里效果如何 / 有没有量化指标」——不是每个知识点都能落到候选人的项目上，硬要数字既不真实也无必要；这类题值得深挖时优先问原理与机制本身（底层实现、边界条件、方案取舍）。
 - 已提问数达到 {target} 题且当前无必须追问的点 → finish 收尾。
 - 一次只问一个问题，禁止一次抛出多个问题；message 中不要出现 JSON 或括号标记。
 - 候选人明确表示不知道 / 要求跳过 → 简单带过并 next；候选人要求结束面试 → finish。
@@ -106,6 +110,9 @@ ANALYSIS_PROMPT = """你是一位面试辅导专家。以下是一场模拟面�
 【目标岗位 JD】（点评与示范答案需贴合岗位要求的技术栈与业务场景）
 {jd}
 
+【候选人职业画像】（交叉技术背景，点评与示范答案侧重参考它；为「（未设置）」则忽略本节）
+{profile_block}
+
 【候选人简历摘要】
 {resume}
 
@@ -145,7 +152,7 @@ ANALYSIS_PROMPT = """你是一位面试辅导专家。以下是一场模拟面�
 1. 每道已回答的题折算百分制：(structure + depth + clarity - 3) ÷ 12 × 100；
 2. 基础分 = 所有已回答题目折算分的平均（跳过 / 未回答的题不参与平均、不扣分）；
 3. 在基础分上允许 ±5 内的整体微调（依据：被追问时的表现、整体流畅度、目标公司的难度校准），调整理由必须写进 summary；微调超过 ±5 视为违规。
-量化结果只对项目 / 场景 / 系统设计类题目有要求：给出了量化数字是加分项。纯八股 / 原理题（如 Redis 持久化、索引原理）答到点上即为完整，不要因「没结合项目 / 没有量化指标」扣分或写进 bad——不是每个知识点都能落到候选人的项目里。
+量化结果只对项目 / 场景 / 系统设计类题目有要求：给出了量化数字是加分项。纯八股 / 原理题答到点上即为完整，不要因「没结合项目 / 没有量化指标」扣分或写进 bad——不是每个知识点都能落到候选人的项目里。
 
 【分数含义：对标该公司的通过线】总分表示「以这个表现，该公司该轮面试能否通过」，不是答题质量的百分比：
 - 95+ 远超该轮通过线，表现出色；85-94 稳过该轮——回答达到该公司该轮面试官的期望就应落在这个区间，不要舍不得给分；70-84 存疑过线，有明显短板；55-69 大概率挂，硬伤多处；55 以下明显不达标。
@@ -301,11 +308,16 @@ def _interviewer_turn(
     else:
         kb_text = "（未配置知识库或未检索到相关笔记，忽略本节，也不要标注「参考」）"
 
+    track = get_current_track(session)
+    owner = session.get(User, interview.user_id) if interview.user_id else None
     prompt = TURN_PROMPT.format(
         company=opp.company,
         round_label=ROUND_LABELS.get(interview.round_type, "面试"),
-        round_emphasis=ROUND_EMPHASIS.get(interview.round_type, ROUND_EMPHASIS["other"]),
+        round_emphasis=track["round_emphasis"].get(interview.round_type)
+        or track["round_emphasis"]["other"],
         topic_block=_topic_block(interview.round_type),
+        profile_block=(build_profile_text(session, owner) if owner else "") or "（未设置）",
+        dim_examples=track["dim_examples"],
         position=opp.position,
         city=opp.city or "未填写",
         salary_range=opp.salary_range or "未填写",
@@ -598,6 +610,11 @@ def _generate_analysis(
         round_label=ROUND_LABELS.get(round_type, "面试"),
         round_note=_analysis_round_note(round_type),
         jd=(opp.jd_text or "（未填写）")[:3000],
+        profile_block=(
+            build_profile_text(session, owner)
+            if (owner := session.get(User, opp.user_id) if opp.user_id else None) is not None
+            else "（未设置）"
+        ),
         resume=resume_text[:5000],
         kb=kb_text,
         answer_standard=ANSWER_STANDARD,

@@ -62,7 +62,7 @@ async function load() {
   if (props.resumeId == null) return
   loading.value = true
   try {
-    const data = await api.listResumes()
+    const data = await api.listResumes(true)
     resume.value = data.items.find((r) => r.id === props.resumeId) ?? null
     if (resume.value) {
       viewMode.value = resume.value.structured ? 'structured' : 'raw'

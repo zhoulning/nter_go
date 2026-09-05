@@ -10,6 +10,7 @@ import {
   HomeOutline,
   MenuOutline,
   MicOutline,
+  PersonCircleOutline,
   PricetagOutline,
   SettingsOutline,
   FlashOutline,
@@ -32,6 +33,7 @@ import StatsView from '../views/StatsView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import UsersView from '../views/UsersView.vue'
 import AuditLogView from '../views/AuditLogView.vue'
+import CareerView from '../views/CareerView.vue'
 import NotificationBell from './NotificationBell.vue'
 
 interface NavItem {
@@ -63,6 +65,7 @@ const PAGE_KEYS = [
   'recordings',
   'stats',
   'offers',
+  'career',
   'settings',
   'users',
   'audit',
@@ -174,6 +177,7 @@ const sections = computed<NavSection[]>(() => [
   {
     title: '系统功能',
     items: [
+      { key: 'career', label: '职业画像', icon: PersonCircleOutline, ready: true },
       { key: 'users', label: '用户管理', icon: PeopleOutline, ready: true, adminOnly: true },
       { key: 'audit', label: '操作日志', icon: TimeOutline, ready: true, adminOnly: true },
       { key: 'settings', label: '系统设置', icon: SettingsOutline, ready: true },
@@ -248,6 +252,7 @@ const PAGE_TITLES: Record<string, string> = {
   recordings: '面试复盘',
   stats: '数据洞察',
   offers: 'Offer 对比',
+  career: '职业画像',
   settings: '系统设置',
   users: '用户管理',
   audit: '操作日志',
@@ -419,6 +424,7 @@ function tabActive(key: string) {
         <StatsView v-if="visited.stats" v-show="active === 'stats'" />
         <OffersView v-if="visited.offers" v-show="active === 'offers'" />
         <SettingsView v-if="visited.settings" v-show="active === 'settings'" />
+        <CareerView v-if="visited.career" v-show="active === 'career'" />
         <UsersView v-if="visited.users" v-show="active === 'users'" />
         <AuditLogView v-if="visited.audit" v-show="active === 'audit'" />
       </main>

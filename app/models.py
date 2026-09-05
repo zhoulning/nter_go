@@ -62,6 +62,7 @@ class User(SQLModel, table=True):
     status: str = Field(default=USER_PENDING, index=True)
     avatar_path: Optional[str] = None  # 头像图片（data/uploads/avatars/ 内路径）
     reject_reason: Optional[str] = None  # 注册拒绝原因（可空）
+    career_profile: Optional[str] = None  # 职业画像 JSON（每位用户一份；设默认简历时自动重生成）
     created_at: datetime = Field(default_factory=datetime.now)
     approved_at: Optional[datetime] = None
     last_login_at: Optional[datetime] = None
@@ -203,6 +204,7 @@ class Resume(SQLModel, table=True):
     questions_json: Optional[str] = None  # 预测面试题 JSON：{"questions":[{tag,q,a}]}
     questions_direction: Optional[str] = None  # 最近一次生成预测题时指定的出题方向（空为综合出题）
     is_default: bool = Field(default=False, index=True)  # 默认简历（新投递自动选用）
+    archived: bool = Field(default=False, index=True)  # 归档：不再出现在选择器中，但历史引用保留
     note: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.now)
 

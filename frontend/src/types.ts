@@ -122,23 +122,35 @@ export interface Question {
   updated_at: string
 }
 
-export const DIMENSION_PRESETS = [
-  '语言特性',
-  'JUC',
-  'JVM',
-  'MySQL',
-  'Redis',
-  '消息队列',
-  '分布式',
-  '微服务',
-  '计算机网络',
-  '系统设计',
-  '项目深挖',
-  '场景设计',
-  '算法',
-  '软素质',
-  '其他',
-]
+/** 职业方向档案（后端 app/tracks.py 的 BUILTIN_TRACKS，维度/分组/prompt 随方向切换） */
+export interface TrackProfile {
+  key: string
+  name: string
+  tagline: string
+  dimensions: string[]
+  groups: string[]
+}
+
+/** 职业画像（admin 全局一份；skills/strengths/gaps 为字符串数组） */
+export interface CareerProfile {
+  track_key: string
+  years: number | null
+  headline: string
+  skills: string[]
+  strengths: string[]
+  gaps: string[]
+  summary: string
+}
+
+export const EMPTY_PROFILE: CareerProfile = {
+  track_key: '',
+  years: null,
+  headline: '',
+  skills: [],
+  strengths: [],
+  gaps: [],
+  summary: '',
+}
 
 export const MASTERY_META: Record<string, { label: string; class: string }> = {
   unknown: { label: '不会', class: 'bg-rose-50 text-rose-600 border-rose-200' },
@@ -174,8 +186,39 @@ export interface Resume {
   questions_json: string | null
   questions_direction: string | null
   is_default: boolean
+  archived: boolean
   note: string | null
   created_at: string
+}
+
+export interface ResumeUsage {
+  resume: { id: number; name: string; archived: boolean; is_default: boolean }
+  opportunities: {
+    id: number
+    company: string
+    position: string
+    status: string
+    rounds: { id: number; round_type: string; result: string }[]
+  }[]
+  questions: { id: number; content: string; dimension: string; source: string }[]
+  match_reports: {
+    id: number
+    opportunity_id: number
+    company: string | null
+    total_score: number
+  }[]
+  review_reports: {
+    id: number
+    recording_id: number
+    recording_name: string | null
+    overall_score: number
+  }[]
+  totals: {
+    opportunities: number
+    questions: number
+    match_reports: number
+    review_reports: number
+  }
 }
 
 export interface ResumeSuggestion {

@@ -9,7 +9,7 @@ REPORT_SCHEMA_HINT = """{
   "questions": [
     {
       "question": "面试官的原问题",
-      "topic": "考察维度（如 项目深挖/MySQL/分布式/系统设计/软素质）",
+      "topic": "考察维度（尽量从这些里选：{topic_examples}；都不合适可用其他具体维度）",
       "my_answer": "候选人回答的要点摘述",
       "scores": { "structure": 1-5, "depth": 1-5, "clarity": 1-5 },
       "good": ["回答中的亮点"],
@@ -54,8 +54,14 @@ def build_review(
     resume_text: str,
     transcript: str,
     kb_text: str = "",
+    dim_examples: str = "",
+    profile_text: str = "",
 ) -> dict:
     """生成结构化复盘报告；超长文字稿自动走两阶段 map-reduce。"""
+    profile_block = profile_text or "（未设置）"
+    report_schema = REPORT_SCHEMA_HINT.replace(
+        "{topic_examples}", dim_examples or "项目深挖/系统设计/软素质"
+    )
     jd = jd_text.strip() or "（未填写工作描述）"
     resume = resume_text.strip() or "（未关联简历，请仅依据文字稿评价）"
     if len(resume) > 6000:
@@ -97,6 +103,9 @@ def build_review(
 【岗位 JD】
 {jd}
 
+【候选人职业画像】（交叉技术背景，点评与 improved 的侧重参考它；为「（未设置）」则忽略本节）
+{profile_block}
+
 【候选人简历要点】
 {resume}
 
@@ -113,7 +122,7 @@ def build_review(
 3. jd_match 对照上面的 JD 逐条判断展示情况。
 4. questions_for_bank 收录值得沉淀的真实面试题（含维度与难度）。
 5. 只输出一个 JSON 对象，不要输出任何其他文字。结构如下：
-{REPORT_SCHEMA_HINT}"""
+{report_schema}"""
 
     raw = _call_llm(base_url, model, api_key, prompt)
     report = _parse_json_loose(raw)
@@ -142,7 +151,7 @@ def build_review(
 
 
 POLISH_PROMPT = """你是转写稿整理助手。请对下面的面试转写稿做「整理」而不是「改写」：
-1. 修正错别字与技术名词拼写（例如：radis→Redis、麦ysql→MySQL、springboot→Spring Boot、dubble→Dubbo、卡夫卡→Kafka、布拉格→Pulsar 等）
+1. 修正错别字与技术名词拼写（例如：{typo_fixes} 等）
 2. 去除口语填充词与结巴重复（嗯、呃、那个、就是说），但不删除任何实质内容、不改变观点与事实、不修改任何数字
 3. 每个发言整理为独立段落，统一格式：[原始时间戳 MM:SS] 说话人：内容
 4. 说话人识别：若行内已有 [说话人1]/[说话人2] 标记，请根据内容判断谁是面试官、谁是候选人，统一写为「面试官」和「我」；没有标记的请根据语义标注
@@ -155,8 +164,15 @@ POLISH_PROMPT = """你是转写稿整理助手。请对下面的面试转写稿�
 ----- 转写稿结束 -----"""
 
 
-def polish_transcript(base_url: str, model: str, api_key: str, transcript: str) -> str:
+def polish_transcript(
+    base_url: str,
+    model: str,
+    api_key: str,
+    transcript: str,
+    typo_fixes: str = "",
+) -> str:
     """AI 矫正转写稿；长稿按行分块逐段整理后拼接。"""
+    default_typos = "radis→Redis、麦ysql→MySQL、springboot→Spring Boot、卡夫卡→Kafka"
     sep = chr(10)
     dsep = chr(10) * 2
     chunks: list[str] = []
@@ -173,6 +189,8 @@ def polish_transcript(base_url: str, model: str, api_key: str, transcript: str) 
 
     out: list[str] = []
     for chunk in chunks:
-        prompt = POLISH_PROMPT.replace("{transcript}", chunk)
+        prompt = POLISH_PROMPT.replace("{typo_fixes}", typo_fixes or default_typos).replace(
+            "{transcript}", chunk
+        )
         out.append(_call_llm(base_url, model, api_key, prompt).strip())
     return dsep.join(out)

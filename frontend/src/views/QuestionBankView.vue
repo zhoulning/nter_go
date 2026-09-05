@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useDialog, useMessage } from 'naive-ui'
 import {
   AddOutline,
@@ -35,6 +35,10 @@ const search = ref('')
 const fDimension = ref<string | null>(null)
 const fMastery = ref<string | null>(null)
 const fDifficulty = ref<string | null>(null)
+
+/** 前端分页：题库为个人数据量级，一次拉全量后本地筛选 + 分页 */
+const page = ref(1)
+const pageSize = ref(10)
 
 const modalShow = ref(false)
 const editing = ref<Question | null>(null)
@@ -116,6 +120,20 @@ const filtered = computed(() => {
   if (fMastery.value) list = list.filter((q) => q.mastery === fMastery.value)
   if (fDifficulty.value) list = list.filter((q) => q.difficulty === fDifficulty.value)
   return list
+})
+
+/** 当前页的题目 */
+const paged = computed(() =>
+  filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value),
+)
+
+// 筛选 / 搜索 / 模式变化时回到第一页；列表变短或每页条数变化时收回页码，避免停留在空页
+watch([search, fDimension, fMastery, fDifficulty, mode], () => {
+  page.value = 1
+})
+watch([filtered, pageSize], () => {
+  const totalPages = Math.max(1, Math.ceil(filtered.value.length / pageSize.value))
+  if (page.value > totalPages) page.value = totalPages
 })
 
 const hasActiveFilter = computed(
@@ -483,7 +501,7 @@ async function exportSelected() {
           </thead>
           <tbody>
             <tr
-              v-for="q in filtered"
+              v-for="q in paged"
               :key="q.id"
               class="cursor-pointer border-b border-zinc-100 transition-colors last:border-b-0 hover:bg-indigo-50/40"
               :class="selectedIds.has(q.id) && 'bg-indigo-50/60'"
@@ -576,6 +594,21 @@ async function exportSelected() {
           </tbody>
         </table>
       </div>
+    </div>
+
+    <!-- 分页：右侧页码 + 每页条数 -->
+    <div
+      v-if="filtered.length > 0"
+      class="flex shrink-0 justify-end px-7 pb-4 max-md:justify-center max-md:px-4"
+    >
+      <n-pagination
+        v-model:page="page"
+        v-model:page-size="pageSize"
+        :item-count="filtered.length"
+        :page-sizes="[10, 20, 50, 100]"
+        show-size-picker
+        size="small"
+      />
     </div>
 
     <!-- 详情悬浮窗：查看 + 操作集中在这里 -->

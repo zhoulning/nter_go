@@ -1,5 +1,6 @@
 """简历版本库：上传、下载、文本抽取（PDF/DOCX）、AI 结构化 / 体检 / 预测题、管理。"""
 import json
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -12,10 +13,20 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
-from app.database import DATA_DIR, get_session
-from app.models import Resume, User
+from app.database import DATA_DIR, engine, get_session
+from app.models import (
+    InterviewRound,
+    MatchReport,
+    Opportunity,
+    Question,
+    Recording,
+    Resume,
+    ReviewReport,
+    User,
+)
 from app.routers.ai import _call_llm, _parse_json_loose
 from app.routers.settings import get_ai_config
+from app.tracks import build_profile_text, get_current_track
 
 router = APIRouter()
 
@@ -73,7 +84,7 @@ def _resume_ai_content(r: Resume) -> str:
 
 REVIEW_PROMPT = """你是资深技术面试官与简历顾问。基于下面的简历内容做一次「简历体检」：先逐维打分，再推导总分，最后给优化建议。
 
-【评分口径】目标岗位默认为 Java 后端/服务端开发；若求职者补充背景中有说明，则按背景评估。分数的含义是「这份简历投递目标岗位时，通过简历筛选（拿到面试机会）的竞争力判断」，不是简历质量的百分比：
+【评分口径】目标岗位默认为 {review_default}；若求职者补充背景或职业画像中有说明，则按背景评估。分数的含义是「这份简历投递目标岗位时，通过简历筛选（拿到面试机会）的竞争力判断」，不是简历质量的百分比：
 - 95+ 竞争力极强，大厂筛选也几乎必得面试机会；
 - 85-94 稳过主流公司筛选，容易拿到面试；
 - 70-84 中小厂大概率过筛，投大厂有风险；
@@ -104,6 +115,9 @@ REVIEW_PROMPT = """你是资深技术面试官与简历顾问。基于下面的�
 {content}
 ----- 结束 -----
 
+求职者职业画像（评估口径的重要参考；为「（未设置）」则忽略本节）：
+{profile_block}
+
 求职者补充背景（体检的重要依据，未提供则为「（未提供）」）：
 {background}"""
 
@@ -111,7 +125,7 @@ REVIEW_PROMPT = """你是资深技术面试官与简历顾问。基于下面的�
 QUESTIONS_PROMPT = """你是技术面试官。基于下面的简历内容，预测面试中最可能被问到的问题：
 1. 出 8 道题：优先针对简历中的具体项目、数字、技术选型做「追问式」出题（如「你提到 QPS 5w，怎么压测出来的？」），再补充对应技能栈的深度题。
 2. 每题字段：
-   - tag：考察维度，必须从这些值里选（与题库维度一致）：项目深挖/系统设计/场景设计/语言特性/JUC/JVM/MySQL/Redis/消息队列/分布式/微服务/计算机网络/算法/软素质，纯技能八股优先用具体技术维度（如 MySQL/Redis），匹配不上才用「其他」
+   - tag：考察维度，必须从这些值里选（与题库维度一致）：{question_tags}，纯技能八股优先用具体技术维度，匹配不上才用「其他」
    - q：问题
    - a：参考答案要点，3-5 条，每条独占一行并以「1. 2. 3.」编号，关键词用 **加粗** 标出，结合简历真实内容
    - full：完整答案（口述版），面试现场可以直接说出来的第一人称完整表述：先用一句话给核心结论（独占一行），再分 2-4 个要点，每个要点独占一行、以「1. 2. 3.」编号、用两三句话展开，关键词用 **加粗** 标出；总长 250-400 字，不要寒暄和总结陈词，内容必须能用上简历中的项目/经历
@@ -124,6 +138,9 @@ QUESTIONS_PROMPT = """你是技术面试官。基于下面的简历内容，预�
 ----- 开始 -----
 {content}
 ----- 结束 -----
+
+求职者职业画像（交叉技术背景，出题与答案侧重参考它；为「（未设置）」则忽略本节）：
+{profile_block}
 
 求职者补充背景（出题的重要依据，未提供则为「（未提供）」）：
 {background}
@@ -174,8 +191,11 @@ def review_resume(
     cfg = get_ai_config(session)
     if not cfg["api_key"]:
         raise HTTPException(status_code=400, detail="尚未配置 AI，请先在「设置」中填写 API Key")
-    prompt = REVIEW_PROMPT.replace("{content}", content).replace(
-        "{background}", r.background or "（未提供）"
+    prompt = (
+        REVIEW_PROMPT.replace("{content}", content)
+        .replace("{background}", r.background or "（未提供）")
+        .replace("{review_default}", get_current_track(session)["review_default"])
+        .replace("{profile_block}", build_profile_text(session, user) or "（未设置）")
     )
     raw = _call_llm(cfg["base_url"], cfg["model"], cfg["api_key"], prompt)
     try:
@@ -236,6 +256,8 @@ def predict_questions(
         QUESTIONS_PROMPT.replace("{content}", content)
         .replace("{background}", r.background or "（未提供）")
         .replace("{direction}", direction or "（未指定，综合出题）")
+        .replace("{question_tags}", get_current_track(session)["question_tags"])
+        .replace("{profile_block}", build_profile_text(session, user) or "（未设置）")
     )
     raw = _call_llm(cfg["base_url"], cfg["model"], cfg["api_key"], prompt)
     try:
@@ -313,17 +335,41 @@ def _resume_dict(r: Resume) -> dict:
 
 @router.get("/resumes")
 def list_resumes(
+    all: bool = False,
     user: User = Depends(get_current_user), session: Session = Depends(get_session)
 ):
-    resumes = session.exec(
-        select(Resume)
-        .where(Resume.user_id == user.id)
-        .order_by(Resume.created_at.desc())
-    ).all()
+    """默认只返回未归档简历（供各处选择器使用）；all=true 返回全部（简历库管理页）。"""
+    stmt = select(Resume).where(Resume.user_id == user.id)
+    if not all:
+        stmt = stmt.where(Resume.archived == False)  # noqa: E712
+    resumes = session.exec(stmt.order_by(Resume.created_at.desc())).all()
     return {"items": [_resume_dict(r) for r in resumes], "total": len(resumes)}
 
 
 @router.post("/resumes")
+def _regen_profile_async(user_id: int) -> None:
+    """后台重生成用户职业画像（简历成为默认时触发）；失败静默，不影响主流程。
+
+    画像内容较慢（一次 LLM 调用），异步执行；用户可在「职业画像」页查看/手动重试。
+    """
+
+    def _job() -> None:
+        from app.routers.career import generate_profile_for_user
+
+        s = Session(engine)
+        try:
+            u = s.get(User, user_id)
+            if u is None:
+                return
+            generate_profile_for_user(s, u)
+        except Exception:
+            pass
+        finally:
+            s.close()
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
 def upload_resume(
     file: UploadFile,
     name: Optional[str] = Form(default=None),
@@ -359,6 +405,10 @@ def upload_resume(
             structured = _structure_with_ai(session, text)
         except HTTPException:
             structured = None  # 未配置 Key 或调用失败时保留原文，可稍后手动整理
+    # 用户的第一份简历自动设为默认（画像等 AI 功能以默认简历为基准）
+    is_first = (
+        session.exec(select(Resume).where(Resume.user_id == user.id)).first() is None
+    )
     resume = Resume(
         name=(name or original.stem).strip() or original.stem,
         filename=original.name,
@@ -369,10 +419,13 @@ def upload_resume(
         structured=structured,
         note=(note or None),
         user_id=user.id,
+        is_default=is_first,
     )
     session.add(resume)
     session.commit()
     session.refresh(resume)
+    if is_first:
+        _regen_profile_async(user.id)
     return _resume_dict(resume)
 
 
@@ -415,8 +468,9 @@ def set_default_resume(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """将该简历设为当前用户的默认，其余取消默认（用户内唯一默认）。"""
+    """将该简历设为当前用户的默认，其余取消默认（用户内唯一默认）；默认变更触发画像重生成。"""
     r = _get_owned_resume(session, resume_id, user)
+    was_default = r.is_default
     for other in session.exec(
         select(Resume).where(Resume.user_id == user.id, Resume.is_default == True)  # noqa: E712
     ).all():
@@ -425,6 +479,8 @@ def set_default_resume(
     r.is_default = True
     session.add(r)
     session.commit()
+    if not was_default:
+        _regen_profile_async(user.id)
     return {"ok": True, "default_id": r.id}
 
 
@@ -465,16 +521,151 @@ def download_resume(
     return FileResponse(path, filename=r.filename)
 
 
+@router.get("/resumes/{resume_id}/usage")
+def resume_usage(
+    resume_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """按简历反查所有引用：投递岗位（含面试轮次）、题目、匹配报告、复盘报告。"""
+    r = _get_owned_resume(session, resume_id, user)
+
+    opps = session.exec(
+        select(Opportunity)
+        .where(Opportunity.resume_id == r.id, Opportunity.user_id == user.id)
+        .order_by(Opportunity.created_at.desc())
+    ).all()
+    opp_ids = [o.id for o in opps]
+    rounds = (
+        session.exec(
+            select(InterviewRound)
+            .where(InterviewRound.opportunity_id.in_(opp_ids))  # type: ignore[union-attr]
+            .order_by(InterviewRound.scheduled_at.desc())
+        ).all()
+        if opp_ids
+        else []
+    )
+    rounds_by_opp: dict[int, list] = {}
+    for rd in rounds:
+        rounds_by_opp.setdefault(rd.opportunity_id, []).append(
+            {"id": rd.id, "round_type": rd.round_type, "result": rd.result}
+        )
+
+    questions = session.exec(
+        select(Question)
+        .where(Question.resume_id == r.id, Question.user_id == user.id)
+        .order_by(Question.created_at.desc())
+    ).all()
+
+    matches = session.exec(
+        select(MatchReport)
+        .where(MatchReport.resume_id == r.id, MatchReport.user_id == user.id)
+        .order_by(MatchReport.created_at.desc())
+    ).all()
+
+    reviews = session.exec(
+        select(ReviewReport)
+        .where(ReviewReport.resume_id == r.id, ReviewReport.user_id == user.id)
+        .order_by(ReviewReport.created_at.desc())
+    ).all()
+    review_rec_ids = [v.recording_id for v in reviews]
+    rec_map = {}
+    if review_rec_ids:
+        for rec in session.exec(
+            select(Recording).where(Recording.id.in_(review_rec_ids))  # type: ignore[union-attr]
+        ).all():
+            rec_map[rec.id] = rec
+
+    opp_map = {o.id: o for o in opps}
+    return {
+        "resume": {"id": r.id, "name": r.name, "archived": r.archived, "is_default": r.is_default},
+        "opportunities": [
+            {
+                "id": o.id,
+                "company": o.company,
+                "position": o.position,
+                "status": o.status,
+                "rounds": rounds_by_opp.get(o.id, []),
+            }
+            for o in opps
+        ],
+        "questions": [
+            {"id": q.id, "content": q.content, "dimension": q.dimension, "source": q.source}
+            for q in questions
+        ],
+        "match_reports": [
+            {
+                "id": m.id,
+                "opportunity_id": m.opportunity_id,
+                "company": opp_map[m.opportunity_id].company if m.opportunity_id in opp_map else None,
+                "total_score": m.total_score,
+            }
+            for m in matches
+        ],
+        "review_reports": [
+            {
+                "id": v.id,
+                "recording_id": v.recording_id,
+                "recording_name": rec_map[v.recording_id].filename if v.recording_id in rec_map else None,
+                "overall_score": v.overall_score,
+            }
+            for v in reviews
+        ],
+        "totals": {
+            "opportunities": len(opps),
+            "questions": len(questions),
+            "match_reports": len(matches),
+            "review_reports": len(reviews),
+        },
+    }
+
+
+class ArchiveBody(BaseModel):
+    archived: bool
+
+
+@router.post("/resumes/{resume_id}/archive")
+def archive_resume(
+    resume_id: int,
+    body: ArchiveBody,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """归档/取消归档：归档后不出现在各处简历选择器中，历史引用保留。默认简历不允许归档。"""
+    r = _get_owned_resume(session, resume_id, user)
+    if body.archived and r.is_default:
+        raise HTTPException(status_code=400, detail="默认简历不能归档，请先把其他简历设为默认")
+    r.archived = body.archived
+    session.add(r)
+    session.commit()
+    session.refresh(r)
+    return _resume_dict(r)
+
+
 @router.delete("/resumes/{resume_id}")
 def delete_resume(
     resume_id: int,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    """删除简历：先解除全部引用（置空 resume_id）再删记录；文件删除放在事务提交成功之后。"""
     r = _get_owned_resume(session, resume_id, user)
+
+    def _clear(model, extra_filter=None):
+        stmt = select(model).where(model.resume_id == r.id)  # type: ignore[attr-defined]
+        if extra_filter is not None:
+            stmt = stmt.where(extra_filter)
+        for row in session.exec(stmt).all():
+            row.resume_id = None
+            session.add(row)
+
+    _clear(Opportunity)
+    _clear(Question)
+    _clear(MatchReport)
+    _clear(ReviewReport)  # 无外键约束，但同样置空避免悬空 ID
+
     path = Path(r.filepath)
-    if path.exists():
-        path.unlink(missing_ok=True)
     session.delete(r)
     session.commit()
+    path.unlink(missing_ok=True)  # 提交成功后才删文件，避免半删状态
     return {"ok": True}

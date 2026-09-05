@@ -10,27 +10,9 @@ from sqlmodel import Session, select
 from app.auth import get_current_user
 from app.database import get_session
 from app.models import InterviewRound, Opportunity, Question, QuestionSource, Resume, User
+from app.tracks import dimension_presets
 
 router = APIRouter()
-
-# 后端方向预置维度，用户也可在新增时自定义
-DIMENSION_PRESETS = [
-    "语言特性",
-    "JUC",
-    "JVM",
-    "MySQL",
-    "Redis",
-    "消息队列",
-    "分布式",
-    "微服务",
-    "计算机网络",
-    "系统设计",
-    "项目深挖",
-    "场景设计",
-    "算法",
-    "软素质",
-    "其他",
-]
 
 DIFFICULTIES = ["easy", "medium", "hard"]
 SOURCES = ["manual", "real", "predicted"]
@@ -177,7 +159,7 @@ def backfill_question_sources(session: Session) -> None:
 def question_meta(
     user: User = Depends(get_current_user), session: Session = Depends(get_session)
 ):
-    dims = list(DIMENSION_PRESETS)
+    dims = dimension_presets(session)
     rows = session.exec(
         select(Question.dimension).where(Question.user_id == user.id).distinct()
     ).all()
@@ -239,7 +221,7 @@ def create_question(
 
     data = body.model_dump()
     # AI 生成的题目（题单预测 / 模拟面试存题）维度必须落在预设内，避免自造近似维度
-    if data["source"] == "predicted" and data["dimension"] not in DIMENSION_PRESETS:
+    if data["source"] == "predicted" and data["dimension"] not in dimension_presets(session):
         data["dimension"] = "其他"
     sources = data.pop("sources") or []
     if sources:

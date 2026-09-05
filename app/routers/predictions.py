@@ -15,8 +15,8 @@ from app.auth import get_current_user
 from app.database import engine, get_session
 from app.models import MatchReport, Opportunity, Prediction, Question, Resume, User
 from app.routers.ai import _call_llm, _parse_json_loose, generate_reference_answer
-from app.routers.questions import DIMENSION_PRESETS
 from app.routers.settings import get_ai_config
+from app.tracks import build_profile_text, dimension_presets, get_current_track
 
 router = APIRouter()
 
@@ -33,26 +33,15 @@ ROUND_LABELS = {
     "other": "面试",
 }
 
-ROUND_EMPHASIS = {
-    "written": "笔试侧重：算法手写题、语言基础、计算机基础选择题，给出题目时附上解题思路要点",
-    "first": "一面侧重：语言特性、并发、数据库 / 缓存 / 消息队列等八股基础，以及简历项目的初步深挖",
-    "second": "二面侧重：技术深度（原理、源码级理解、性能调优）、系统方案设计、复杂问题排查思路",
-    "third": "三面侧重：大型系统设计、技术选型与权衡、架构演进、团队协作与技术视野、软素质",
-    "comprehensive": "综合面侧重：不设固定侧重——八股基础、项目深挖、系统设计、场景开放题、职业规划与软素质都可能问到，考察整体素养与随机应变；提问自由度最大，按现场对话自然流动",
-    "hr": "HR 面侧重：求职动机、离职原因、职业规划、稳定性、薪资沟通策略、软素质与价值观",
-    "project": "项目经历面（专题）侧重：整场只围绕简历项目深挖——个人贡献与实际角色、架构与技术选型的取舍理由、难点攻关与故障排查过程、量化结果与业务价值、复盘与改进；不问与项目无关的八股 / 原理题",
-    "stress": "压力面（专题）侧重：高压质询下的技术基础与项目——问题本身仍来自简历、项目与技术基础，但以质疑、否定、连环追问的施压方式提出，考察情绪稳定性、抗压能力与临场反应",
-    "other": "一般技术面试：基础与项目并重",
-}
-
-GROUPS = ["八股基础", "项目深挖", "场景设计", "软素质", "反问建议"]
-
 PREDICT_PROMPT = """你是一位资深的面试出题官，正在为候选人模拟出一份「{round_label}」预测题单。
 
 【目标公司】{company} · {position}
 【城市 / 薪资范围】{city} · {salary_range}
 【JD】
 {jd}
+
+【我的职业画像】（交叉技术背景与出题侧重参考它；为「（未设置）」则忽略本节）
+{profile_block}
 
 【我的简历摘要】
 {resume}
@@ -69,7 +58,7 @@ PREDICT_PROMPT = """你是一位资深的面试出题官，正在为候选人模
 {{
   "questions": [
     {{
-      "group": "八股基础|项目深挖|场景设计|软素质|反问建议 之一",
+      "group": "{groups_hint} 之一",
       "dimension": "考察维度，必须严格从以下预设中选一个：{dimension_presets}，不要自创维度",
       "q": "问题题干（面试官的问法，具体不空泛）",
       "intent": "考察意图（这道题想验证什么）",
@@ -82,7 +71,7 @@ PREDICT_PROMPT = """你是一位资深的面试出题官，正在为候选人模
 }}
 
 要求：
-- 共 {total} 道左右。八股基础最多；「项目深挖」必须基于简历中的真实项目设计追问链（如 QPS 怎么估的→出了问题怎么排查→为什么不用别的方案）；HR 面则软素质 + 反问为主。
+- 共 {total} 道左右。「{first_group}」最多；「项目深挖」必须基于简历中的真实项目设计追问链（如 QPS 怎么估的→出了问题怎么排查→为什么不用别的方案）；HR 面则软素质 + 反问为主。
 - 「反问建议」给 2-3 条适合这一轮问面试官的反问题。
 - 题库中「不会 / 模糊」的弱项维度优先覆盖；最近已被真实问过的题除非高价值否则避免原样重复。
 - key_points 简明扼要，不要长篇大论。
@@ -231,6 +220,9 @@ def generate_prediction(
     if not cfg["api_key"]:
         raise HTTPException(status_code=400, detail="尚未配置 AI，请先在「设置」中填写 API Key")
 
+    track = get_current_track(session)
+    groups = track["groups"]
+    presets = dimension_presets(session)
     prompt = PREDICT_PROMPT.format(
         round_label=ROUND_LABELS.get(body.round_type, "面试"),
         company=opp.company,
@@ -238,11 +230,14 @@ def generate_prediction(
         city=opp.city or "未填写",
         salary_range=opp.salary_range or "未填写",
         jd=opp.jd_text.strip()[:6000],
+        profile_block=build_profile_text(session, user) or "（未设置）",
         resume=resume_text[:5000],
         match_summary=match_summary,
         bank_summary=bank_summary[:3000],
-        emphasis=ROUND_EMPHASIS.get(body.round_type, ROUND_EMPHASIS["other"]),
-        dimension_presets="/".join(DIMENSION_PRESETS),
+        emphasis=track["round_emphasis"].get(body.round_type) or track["round_emphasis"]["other"],
+        dimension_presets="/".join(presets),
+        groups_hint="|".join(groups),
+        first_group=groups[0],
         total=8 if body.round_type == "hr" else 14,
     )
     raw = _call_llm(cfg["base_url"], cfg["model"], cfg["api_key"], prompt)
@@ -256,8 +251,8 @@ def generate_prediction(
         if not isinstance(item, dict) or not item.get("q"):
             continue
         questions.append({
-            "group": item.get("group") if item.get("group") in GROUPS else "八股基础",
-            "dimension": item.get("dimension") if item.get("dimension") in DIMENSION_PRESETS else "其他",
+            "group": item.get("group") if item.get("group") in groups else groups[0],
+            "dimension": item.get("dimension") if item.get("dimension") in presets else "其他",
             "q": str(item["q"]),
             "intent": str(item.get("intent") or ""),
             "key_points": str(item.get("key_points") or ""),

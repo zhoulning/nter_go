@@ -31,5 +31,6 @@
 
 ## 数据
 
-- 数据库：`data/app.db`（SQLite / WAL），本地个人数据，勿删除、勿提交。
+- 数据库：`data/app.db`（SQLite / WAL），本地个人数据，勿删除；**已纳入 Git 仓库**（克隆后可复现演示数据）。注意两点：(1) `setting` 表的 `ai_api_key` 属敏感信息且仓库为公开，**提交前必须清空该键、提交后再本地填回**；(2) `data/models/`（声纹模型，38MB，可另行下载）、`data/chrome-*`（浏览器会话，含登录 cookie）不入库。
+- 上传文件：`data/uploads/`（简历 / 录音 / 头像）随数据库一并入库。
 - 首次启动自动写入种子数据；`.venv/`、`frontend/node_modules/`、`frontend/dist/` 均为本地产物。

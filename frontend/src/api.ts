@@ -1,4 +1,5 @@
 import type {
+  CareerProfile,
   MatchReportInfo,
   MockInterviewInfo,
   Opportunity,
@@ -7,7 +8,9 @@ import type {
   ResearchMaterial,
   ResearchNote,
   Resume,
+  ResumeUsage,
   RoundEvent,
+  TrackProfile,
 } from './types'
 import { clearAuthUser } from './composables/useAuth'
 
@@ -478,6 +481,36 @@ export const api = {
 
   questionMeta: () => request<{ dimensions: string[] }>('/questions/meta'),
 
+  // ---- 职业方向 / 职业画像 ----
+
+  careerOverview: () => request<{ tracks: TrackProfile[]; current_key: string }>('/career/overview'),
+
+  switchTrack: (key: string) =>
+    request<{ ok: boolean; current_key: string }>('/career/track', {
+      method: 'PUT',
+      body: JSON.stringify({ key }),
+    }),
+
+  getProfile: () => request<CareerProfile>('/career/profile'),
+
+  saveProfile: (payload: Partial<CareerProfile>) =>
+    request<CareerProfile>('/career/profile', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  generateProfile: (resumeId?: number) =>
+    request<CareerProfile>('/career/profile/generate', {
+      method: 'POST',
+      body: JSON.stringify({ resume_id: resumeId ?? null }),
+    }),
+
+  saveCustomDimensions: (dimensions: string[]) =>
+    request<{ dimensions: string[] }>('/career/dimensions', {
+      method: 'PUT',
+      body: JSON.stringify({ dimensions }),
+    }),
+
   createQuestion: (payload: QuestionPayload) =>
     request<Question>('/questions', { method: 'POST', body: JSON.stringify(payload) }),
 
@@ -495,7 +528,16 @@ export const api = {
 
   // ---- 简历库 ----
 
-  listResumes: () => request<{ items: Resume[]; total: number }>('/resumes'),
+  listResumes: (all = false) =>
+    request<{ items: Resume[]; total: number }>(`/resumes${all ? '?all=true' : ''}`),
+
+  getResumeUsage: (id: number) => request<ResumeUsage>(`/resumes/${id}/usage`),
+
+  archiveResume: (id: number, archived: boolean) =>
+    request<Resume>(`/resumes/${id}/archive`, {
+      method: 'POST',
+      body: JSON.stringify({ archived }),
+    }),
 
   uploadResume: (file: File, name?: string) => {
     const fd = new FormData()

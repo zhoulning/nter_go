@@ -7,8 +7,13 @@ __pycache__/
 frontend/node_modules/
 frontend/dist/
 
-# 本地数据
-data/
+# 本地数据：数据库与上传文件纳入仓库（克隆后可复现演示数据）；运行期产物除外
+data/app.db-wal
+data/app.db-shm
+data/chrome-boss-profile/
+data/chrome-debug.log
+data/chrome-zhipin.log
+data/models/
 
 # IDE / 系统
 .idea/

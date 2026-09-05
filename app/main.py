@@ -15,12 +15,13 @@ from sqlmodel import Session, select
 
 from app.auth import hash_password
 from app.database import BASE_DIR, engine, init_db
-from app.models import ROLE_ADMIN, USER_ACTIVE, User
+from app.models import ROLE_ADMIN, USER_ACTIVE, Setting, User
 from app.routers import (
     ai,
     audit,
     auth,
     calendar,
+    career,
     match,
     mock_interviews,
     notifications,
@@ -135,6 +136,9 @@ def _migrate() -> None:
         # v2.1：预测面试题的出题方向（最近一次生成时指定）
         if "questions_direction" not in resume_cols:
             conn.execute(text("ALTER TABLE resume ADD COLUMN questions_direction TEXT"))
+        # 简历归档标记（模型已定义，功能接入前先保证列存在）
+        if "archived" not in resume_cols:
+            conn.execute(text("ALTER TABLE resume ADD COLUMN archived BOOLEAN DEFAULT 0"))
         # v1.8：工作地址（详细地址）
         if "address" not in cols:
             conn.execute(text("ALTER TABLE opportunity ADD COLUMN address TEXT"))
@@ -143,6 +147,10 @@ def _migrate() -> None:
             tcols = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
             if "user_id" not in tcols:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER"))
+        # v2.2：每用户一份职业画像（JSON；设默认简历时自动重生成）
+        ucols = {row[1] for row in conn.execute(text("PRAGMA table_info(user)"))}
+        if "career_profile" not in ucols:
+            conn.execute(text("ALTER TABLE user ADD COLUMN career_profile TEXT"))
 
 
 def _ensure_admin(session: Session) -> User:
@@ -186,6 +194,14 @@ async def lifespan(_app: FastAPI):
         seed_if_empty(session, admin.id)
         seed_offers_if_empty(session)
         backfill_question_sources(session)
+        # v2.2：画像改为每用户一份 —— 旧版全局画像（Setting.career_profile）迁移给 admin
+        legacy = session.get(Setting, "career_profile")
+        if legacy is not None and legacy.value.strip():
+            if not (admin.career_profile or "").strip():
+                admin.career_profile = legacy.value
+                session.add(admin)
+            session.delete(legacy)
+            session.commit()
     yield
 
 
@@ -205,6 +221,7 @@ app.include_router(audit.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(opportunities.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
+app.include_router(career.router, prefix="/api")
 app.include_router(ai.router, prefix="/api")
 app.include_router(calendar.router, prefix="/api")
 app.include_router(questions.router, prefix="/api")

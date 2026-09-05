@@ -689,12 +689,23 @@ def collect_answer_context(
         kb_text = kb_text[:2400]
     else:
         kb_text = "（未配置知识库或未检索到相关笔记，忽略本节）"
-    return {"resume_text": resume_text, "jd_text": jd_text, "kb_text": kb_text}
+
+    from app.tracks import build_profile_text
+
+    profile_text = build_profile_text(session, user) or "（尚未生成职业画像，忽略本节）"
+    return {
+        "resume_text": resume_text,
+        "jd_text": jd_text,
+        "kb_text": kb_text,
+        "profile_text": profile_text,
+    }
 
 
-def build_answer_prompt(*, content: str, dimension: str, companies: list[str], ctx: dict) -> str:
+def build_answer_prompt(
+    *, content: str, dimension: str, companies: list[str], ctx: dict, coach_role: str = "资深面试教练"
+) -> str:
     """唯一的答案 prompt：标准来自共享常量，上下文来自 collect_answer_context。"""
-    return f"""你是资深后端面试教练。针对下面这道真实面试题，直接给出面试现场的口述版参考答案。
+    return f"""你是{coach_role}。针对下面这道真实面试题，直接给出面试现场的口述版参考答案。
 
 格式要求（严格遵守）：
 {ANSWER_STANDARD}
@@ -712,6 +723,9 @@ def build_answer_prompt(*, content: str, dimension: str, companies: list[str], c
 
 目标岗位 JD（贴合岗位要求的技术栈与业务场景作答）：
 {ctx["jd_text"]}
+
+我的职业画像（交叉技术背景与作答侧重参考它；为空则忽略本节）：
+{ctx["profile_text"]}
 
 我的简历（项目经历以此为准）：
 {ctx["resume_text"]}
@@ -744,8 +758,14 @@ def generate_reference_answer(
         opportunity_id=opportunity_id,
         kb_query=f"{content} {dimension}",
     )
+    from app.tracks import get_current_track
+
     prompt = build_answer_prompt(
-        content=content, dimension=dimension, companies=companies or [], ctx=ctx
+        content=content,
+        dimension=dimension,
+        companies=companies or [],
+        ctx=ctx,
+        coach_role=get_current_track(session)["coach_role"],
     )
     raw = _call_llm(cfg["base_url"], cfg["model"], cfg["api_key"], prompt)
     answer = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", raw.strip()).strip()
@@ -861,7 +881,7 @@ def question_assist(
     session: Session = Depends(get_session),
 ):
     """题目录入 AI 辅助：润色题干、按题目内容选出考察维度（维度强制落在候选列表内）。"""
-    from app.routers.questions import DIMENSION_PRESETS
+    from app.tracks import dimension_presets
 
     cfg = get_ai_config(session)
     if not cfg["api_key"]:
@@ -869,7 +889,7 @@ def question_assist(
     content = (body.content or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="题干为空，无法使用 AI 辅助")
-    dims = [d.strip() for d in body.dimensions if d.strip()] or list(DIMENSION_PRESETS)
+    dims = [d.strip() for d in body.dimensions if d.strip()] or dimension_presets(session)
     dimension_only = body.task == "dimension"
     prompt = (
         QUESTION_ASSIST_PROMPT
