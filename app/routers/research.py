@@ -15,8 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.auth import get_current_user
 from app.database import get_session
-from app.models import NOTE_TYPES, Opportunity, ResearchMaterial, ResearchNote, Resume
+from app.models import NOTE_TYPES, Opportunity, ResearchMaterial, ResearchNote, Resume, User
 from app.routers.ai import _call_llm, _extract_site_page, _fetch_url, _strip_html
 from app.routers.settings import get_ai_config, get_browser_config
 
@@ -28,6 +29,7 @@ NOTE_TYPE_LABELS = {
     "tech": "技术栈调研",
     "self_intro": "自我介绍稿",
     "ask_back": "反问清单",
+    "employee": "员工评价",
 }
 
 
@@ -46,9 +48,10 @@ class MaterialFetchRequest(BaseModel):
     manual_title: str = ""
 
 
-def _get_opportunity(session: Session, opportunity_id: int) -> Opportunity:
+def _get_opportunity(session: Session, opportunity_id: int, user: User) -> Opportunity:
+    """取当前用户的岗位；不存在或越权一律 404。"""
     opp = session.get(Opportunity, opportunity_id)
-    if opp is None:
+    if opp is None or opp.user_id != user.id:
         raise HTTPException(status_code=404, detail="岗位不存在")
     return opp
 
@@ -65,8 +68,12 @@ def _note_dict(note: ResearchNote) -> dict:
 
 
 @router.get("/opportunities/{opportunity_id}/notes")
-def list_notes(opportunity_id: int, session: Session = Depends(get_session)):
-    _get_opportunity(session, opportunity_id)
+def list_notes(
+    opportunity_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    _get_opportunity(session, opportunity_id, user)
     rows = session.exec(
         select(ResearchNote).where(ResearchNote.opportunity_id == opportunity_id)
     ).all()
@@ -78,11 +85,12 @@ def save_note(
     opportunity_id: int,
     note_type: str,
     body: NoteUpdate,
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
     if note_type not in NOTE_TYPES:
         raise HTTPException(status_code=404, detail="未知的笔记类型")
-    _get_opportunity(session, opportunity_id)
+    _get_opportunity(session, opportunity_id, user)
 
     note = session.exec(
         select(ResearchNote).where(
@@ -91,7 +99,9 @@ def save_note(
         )
     ).first()
     if note is None:
-        note = ResearchNote(opportunity_id=opportunity_id, note_type=note_type)
+        note = ResearchNote(
+            opportunity_id=opportunity_id, note_type=note_type, user_id=user.id
+        )
     note.content = body.content
     note.ai_generated = body.ai_generated
     note.updated_at = datetime.now()
@@ -103,8 +113,12 @@ def save_note(
 
 @router.delete("/opportunities/{opportunity_id}/notes/{note_type}")
 def delete_note(
-    opportunity_id: int, note_type: str, session: Session = Depends(get_session)
+    opportunity_id: int,
+    note_type: str,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
 ):
+    _get_opportunity(session, opportunity_id, user)
     note = session.exec(
         select(ResearchNote).where(
             ResearchNote.opportunity_id == opportunity_id,
@@ -134,8 +148,12 @@ def _material_dict(m: ResearchMaterial, preview: bool = True) -> dict:
 
 
 @router.get("/opportunities/{opportunity_id}/materials")
-def list_materials(opportunity_id: int, session: Session = Depends(get_session)):
-    _get_opportunity(session, opportunity_id)
+def list_materials(
+    opportunity_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    _get_opportunity(session, opportunity_id, user)
     rows = session.exec(
         select(ResearchMaterial)
         .where(ResearchMaterial.opportunity_id == opportunity_id)
@@ -151,6 +169,16 @@ def _title_from_html(html: str) -> str:
     return _strip_html(m.group(1))[:80]
 
 
+_LOGIN_WALL_KEYWORDS = ("登录", "登陆", "扫码", "验证码", "请先注册", "log in", "sign in")
+
+
+def _looks_like_login_wall(text: str) -> bool:
+    """整篇都很短且登录提示词密集时，判定为登录墙空壳；长正文即使带登录词也放行。"""
+    if len(text) >= 1000:
+        return False
+    return sum(1 for k in _LOGIN_WALL_KEYWORDS if k in text.lower()) >= 2
+
+
 def _fetch_material(session: Session, url: str) -> ResearchMaterial:
     """抓取单个 URL：先服务端直抓，内容过少或失败时回退 CDP 浏览器抓取。"""
     title, text, via = "", "", "url"
@@ -160,10 +188,10 @@ def _fetch_material(session: Session, url: str) -> ResearchMaterial:
         title = _title_from_html(html)
     except Exception:
         text = ""
-    if len(text) < 200:
-        # 直抓失败 / 被反爬拦截：走用户自己的浏览器（真实指纹 + 登录态）
+    if len(text) < 400:
+        # 直抓失败 / SPA 空壳 / 被反爬拦截：走用户自己的浏览器（真实指纹 + 登录态）
         cdp = get_browser_config(session)["cdp_endpoint"]
-        page = _extract_site_page(url, cdp)
+        page = _extract_site_page(url, cdp, require_jd=False)
         title, text, via = page.get("title", ""), page.get("text", ""), "browser"
     return ResearchMaterial(
         opportunity_id=0,  # 由调用方回填
@@ -178,9 +206,10 @@ def _fetch_material(session: Session, url: str) -> ResearchMaterial:
 def add_materials(
     opportunity_id: int,
     body: MaterialFetchRequest,
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    _get_opportunity(session, opportunity_id)
+    _get_opportunity(session, opportunity_id, user)
     saved, failed, duplicates = [], [], []
 
     existing_urls = {
@@ -205,10 +234,11 @@ def add_materials(
             continue
         try:
             m = _fetch_material(session, url)
-            if len(m.content) < 150:
-                failed.append({"url": url, "error": "抓到的正文过少，可能是登录墙或反爬拦截"})
+            if len(m.content) < 300 or _looks_like_login_wall(m.content):
+                failed.append({"url": url, "error": "抓到的正文过少或是登录墙，未作为资料保存"})
                 continue
             m.opportunity_id = opportunity_id
+            m.user_id = user.id
             session.add(m)
             session.commit()
             session.refresh(m)
@@ -222,6 +252,7 @@ def add_materials(
     if body.manual_text.strip():
         m = ResearchMaterial(
             opportunity_id=opportunity_id,
+            user_id=user.id,
             source_type="manual",
             title=body.manual_title.strip() or "粘贴的资料",
             url=None,
@@ -237,14 +268,92 @@ def add_materials(
 
 @router.delete("/opportunities/{opportunity_id}/materials/{material_id}")
 def delete_material(
-    opportunity_id: int, material_id: int, session: Session = Depends(get_session)
+    opportunity_id: int,
+    material_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
 ):
+    _get_opportunity(session, opportunity_id, user)
     m = session.get(ResearchMaterial, material_id)
     if m is None or m.opportunity_id != opportunity_id:
         raise HTTPException(status_code=404, detail="资料不存在")
     session.delete(m)
     session.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- 自动调研
+
+
+def _auto_sources(company: str) -> list[tuple[str, str]]:
+    """按公司名生成候选情报来源（label, url）。"""
+    q = quote(company)
+    return [
+        ("维基百科", f"https://zh.wikipedia.org/zh-cn/{q}"),
+        ("百度百科", f"https://baike.baidu.com/item/{q}"),
+        ("企查查", f"https://www.qcc.com/web/search?key={q}"),
+        ("爱企查", f"https://aiqicha.baidu.com/s?q={q}"),
+        ("小红书", f"https://www.xiaohongshu.com/search_result_ai?keyword={quote(company + ' 面试')}&source=web_explore_feed"),
+        ("知乎", f"https://www.zhihu.com/search?type=content&q={quote(company + ' 面试 怎么样')}"),
+        ("脉脉", f"https://maimai.cn/web/search_center?highlight=true&query={quote(company)}&type=feed"),
+        # 员工相关
+        ("脉脉·加班评价", f"https://maimai.cn/web/search_center?highlight=true&query={quote(company + ' 加班')}&type=feed"),
+        ("小红书·工作体验", f"https://www.xiaohongshu.com/search_result_ai?keyword={quote(company + ' 工作体验')}&source=web_explore_feed"),
+        ("知乎·工作体验", f"https://www.zhihu.com/search?type=content&q={quote(company + ' 工作体验 加班 福利')}"),
+        ("职友集", f"https://www.jobui.com/search/?keyword={q}"),
+    ]
+
+
+@router.post("/opportunities/{opportunity_id}/notes/auto-research")
+def auto_research(
+    opportunity_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """自动调研：按公司名到多个公开渠道收集资料，逐源容错，成功的存为参考材料。"""
+    opp = _get_opportunity(session, opportunity_id, user)
+    saved, failed, duplicates = [], [], []
+
+    existing_urls = {
+        m.url
+        for m in session.exec(
+            select(ResearchMaterial).where(
+                ResearchMaterial.opportunity_id == opportunity_id
+            )
+        ).all()
+        if m.url
+    }
+
+    for label, url in _auto_sources(opp.company):
+        if url in existing_urls:
+            duplicates.append(label)
+            continue
+        try:
+            m = _fetch_material(session, url)
+            m.title = f"{label}·{m.title or opp.company}"[:90]
+            if len(m.content) < 400 or _looks_like_login_wall(m.content):
+                failed.append({
+                    "source": label,
+                    "error": "需要登录或被反爬拦截——可在专用浏览器登录该站点后，通过「抓取资料」手动重试",
+                })
+                continue
+            m.opportunity_id = opportunity_id
+            m.user_id = user.id
+            session.add(m)
+            session.commit()
+            session.refresh(m)
+            existing_urls.add(url)
+            saved.append(_material_dict(m))
+        except HTTPException as e:
+            err = str(e.detail)[:160]
+            if "BOSS" in err or "招聘" in err or "登录" in err:
+                # 底层抓取的报错文案是职位提取场景的，自动调研场景统一成中性描述
+                err = "该渠道需要登录或被反爬拦截——在专用浏览器中登录该站点后重试即可"
+            failed.append({"source": label, "error": err})
+        except Exception as e:
+            failed.append({"source": label, "error": f"{type(e).__name__}: {str(e)[:120]}"})
+
+    return {"saved": saved, "failed": failed, "duplicates": duplicates}
 
 
 # ---------------------------------------------------------------- AI 情报生成
@@ -270,6 +379,12 @@ _OUTLINE_HINTS = {
 2. **3 分钟版**（技术面开场用）：在 1 分钟版基础上展开重点项目（背景-方案-结果）、技术亮点。
 要求：只使用简历中真实存在的内容，禁止编造经历与数字；突出与该 JD 的匹配点；
 在正文中用「【检查】」标注需要用户核对或替换成真实数字的位置。""",
+    "employee": """请输出「员工评价」情报（Markdown），围绕：
+1. 工作强度与加班情况（是否大小周、常态化加班、弹性工作）；
+2. 薪资福利（社保公积金缴纳基数与比例、补贴、年终奖惯例、调薪机制）；
+3. 团队氛围与管理风格；4. 离职率、裁员与业务稳定性动态；
+5. 员工的真实好评与差评（分开列出，标注来源渠道）。
+评价类内容必须有来源依据；没有可靠来源的部分宁缺毋滥，只给「去哪查」的检查项。""",
     "ask_back": """请输出「反问清单」（Markdown），按场景分组：
 1. 问业务（业务方向、目标与挑战）；2. 问团队（规模、分工、技术演进）；
 3. 问成长（培养机制、技术氛围、晋升路径）；4. 问流程（后续轮次安排与反馈时间）。
@@ -336,11 +451,12 @@ def generate_outline(
     opportunity_id: int,
     note_type: str,
     body: OutlineRequest,
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
     if note_type not in NOTE_TYPES:
         raise HTTPException(status_code=404, detail="未知的笔记类型")
-    opp = _get_opportunity(session, opportunity_id)
+    opp = _get_opportunity(session, opportunity_id, user)
 
     existing = session.exec(
         select(ResearchNote).where(
@@ -354,7 +470,7 @@ def generate_outline(
     resume_text = None
     if opp.resume_id:
         resume = session.get(Resume, opp.resume_id)
-        if resume is not None:
+        if resume is not None and resume.user_id == user.id:
             resume_text = resume.structured or resume.text
 
     cfg = get_ai_config(session)
@@ -371,7 +487,9 @@ def generate_outline(
         raise HTTPException(status_code=502, detail="AI 未返回内容，请重试")
 
     if existing is None:
-        existing = ResearchNote(opportunity_id=opportunity_id, note_type=note_type)
+        existing = ResearchNote(
+            opportunity_id=opportunity_id, note_type=note_type, user_id=user.id
+        )
     existing.content = content
     existing.ai_generated = True
     existing.updated_at = datetime.now()

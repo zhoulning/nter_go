@@ -226,14 +226,14 @@ function reviewBadge(rec: RecordingInfo) {
   />
 
   <div v-else class="flex h-full flex-col">
-    <header class="fade-up flex items-end justify-between px-7 pb-4 pt-6">
+    <header class="fade-up flex items-end justify-between px-7 pb-4 pt-6 max-md:px-4 max-md:pt-4">
       <div>
         <h1 class="text-[21px] font-bold tracking-tight text-zinc-900">面试复盘</h1>
         <p class="mt-1 text-[13px] text-zinc-400">
           录音复盘与文字复盘两种方式，结合岗位 JD、简历生成逐题复盘报告
         </p>
       </div>
-      <button class="btn-gradient" @click="openCreate">
+      <button class="btn-gradient shrink-0 whitespace-nowrap max-md:ml-3" @click="openCreate">
         <n-icon :component="AddOutline" :size="16" />
         新建复盘
       </button>
@@ -250,7 +250,7 @@ function reviewBadge(rec: RecordingInfo) {
       description="还没有录音 · 点右上角「上传录音」，或直接粘贴文字稿生成复盘报告"
     />
 
-    <div v-else class="min-h-0 flex-1 overflow-y-auto px-7 pb-6">
+    <div v-else class="min-h-0 flex-1 overflow-y-auto px-7 pb-6 max-md:px-4">
       <div class="flex flex-col gap-3">
         <div
           v-for="rec in recordings"
@@ -268,7 +268,7 @@ function reviewBadge(rec: RecordingInfo) {
             {{ (rec.company ?? '?').slice(0, 1) }}
           </span>
           <span class="min-w-0 flex-1">
-            <span class="flex items-center gap-2">
+            <span class="flex items-center gap-2 max-md:flex-wrap">
               <span class="truncate text-[14px] font-semibold text-zinc-800">{{ rec.company }}</span>
               <span
                 v-if="rec.round_type"
@@ -296,7 +296,7 @@ function reviewBadge(rec: RecordingInfo) {
                 {{ reviewBadge(rec).text }}
               </span>
             </span>
-            <span class="mt-0.5 flex items-center gap-2 text-[11.5px] text-zinc-400">
+            <span class="mt-0.5 flex items-center gap-2 text-[11.5px] text-zinc-400 max-md:flex-wrap">
               <span class="truncate">{{ rec.position }}</span>
               <template v-if="rec.kind === 'text'">
                 <span>·</span>
@@ -319,7 +319,7 @@ function reviewBadge(rec: RecordingInfo) {
             />
           </button>
           <div
-            class="flex w-12 shrink-0 items-center justify-center border-l border-zinc-100 opacity-0 transition-opacity group-hover:opacity-100"
+            class="flex w-12 shrink-0 items-center justify-center border-l border-zinc-100 opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100"
           >
             <a
               :href="api.recordingFileUrl(rec.id)"

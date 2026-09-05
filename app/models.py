@@ -28,16 +28,77 @@ STATUS_GIVE_UP = "give_up"            # 主动放弃
 ARCHIVED_STATUSES = [STATUS_REJECTED, STATUS_NO_RESPONSE, STATUS_GIVE_UP]
 
 # 面试轮次类型
-ROUND_TYPES = ["written", "first", "second", "third", "cross", "hr", "other"]
+ROUND_TYPES = ["written", "first", "second", "third", "comprehensive", "hr", "other"]
 
 # 调研笔记类型（每个岗位下每种类型各一条）
-NOTE_TYPES = ["company", "team", "tech", "self_intro", "ask_back"]
+NOTE_TYPES = ["company", "team", "tech", "self_intro", "ask_back", "employee"]
 
 # 轮次结果
 ROUND_PENDING = "pending"
 ROUND_PASSED = "passed"
 ROUND_FAILED = "failed"
 ROUND_NO_SHOW = "no_show"
+
+# 用户角色 / 账号状态
+ROLE_ADMIN = "admin"        # 超级管理员：用户管理、系统设置
+ROLE_USER = "user"
+USER_ACTIVE = "active"      # 正常（审核通过）
+USER_PENDING = "pending"    # 注册待审核
+USER_REJECTED = "rejected"  # 注册被拒绝
+USER_DISABLED = "disabled"  # 已禁用（数据保留，不可登录）
+
+# 通知类型
+NOTIF_ACCOUNT = "account"    # 账号事件（注册待审核 / 审核结果 / 禁用等）
+
+
+class User(SQLModel, table=True):
+    """登录账号。admin 为超级管理员，现有数据全部归属 admin。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str = Field(unique=True, index=True)
+    password_hash: str                # pbkdf2_sha256$iterations$salt$hash
+    display_name: Optional[str] = None
+    role: str = Field(default=ROLE_USER, index=True)
+    status: str = Field(default=USER_PENDING, index=True)
+    avatar_path: Optional[str] = None  # 头像图片（data/uploads/avatars/ 内路径）
+    reject_reason: Optional[str] = None  # 注册拒绝原因（可空）
+    created_at: datetime = Field(default_factory=datetime.now)
+    approved_at: Optional[datetime] = None
+    last_login_at: Optional[datetime] = None
+
+
+class UserSession(SQLModel, table=True):
+    """登录会话（HttpOnly Cookie 中存原始 token，库里只存 sha256）。"""
+
+    token_hash: str = Field(primary_key=True)
+    user_id: int = Field(index=True)
+    created_at: datetime = Field(default_factory=datetime.now)
+    expires_at: datetime = Field(index=True)
+
+
+class Notification(SQLModel, table=True):
+    """站内通知（账号事件）。面试日程提醒按日历数据实时计算，不入库。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)
+    type: str = Field(default=NOTIF_ACCOUNT, index=True)
+    title: str
+    body: Optional[str] = None
+    read: bool = Field(default=False, index=True)
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class AuditLog(SQLModel, table=True):
+    """操作日志：登录认证、用户管理、系统配置变更等关键操作留痕。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, index=True)  # 操作人（登录失败等场景可为空）
+    username: str = Field(default="", index=True)  # 操作人用户名快照（用户删除后日志仍可读）
+    action: str = Field(index=True)    # 如 auth.login / user.disable / settings.ai
+    target: Optional[str] = None       # 操作对象（如被操作的用户名 / 配置名）
+    detail: Optional[str] = None       # 补充说明（如拒绝原因）
+    ip: Optional[str] = None           # 操作来源 IP
+    created_at: datetime = Field(default_factory=datetime.now, index=True)
 
 
 class Opportunity(SQLModel, table=True):
@@ -58,6 +119,7 @@ class Opportunity(SQLModel, table=True):
     resume_id: Optional[int] = Field(default=None, foreign_key="resume.id")  # 投递所用简历
     jd_text: Optional[str] = None            # 工作描述：JD 完整内容（职责、要求及其他）
     note: Optional[str] = None
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -67,6 +129,7 @@ class InterviewRound(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     opportunity_id: int = Field(foreign_key="opportunity.id", index=True)
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户（冗余，随岗位）
     round_type: str = "first"
     scheduled_at: Optional[datetime] = None  # 计划时间
     actual_at: Optional[datetime] = None     # 实际时间
@@ -103,6 +166,7 @@ class Question(SQLModel, table=True):
     self_rating: Optional[int] = None  # 自我评分 1-5
     mastery: str = Field(default="unknown", index=True)  # unknown / fuzzy / mastered
     review_done: bool = Field(default=False)  # 错题本：已复习标记
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -117,6 +181,7 @@ class QuestionSource(SQLModel, table=True):
     question_id: int = Field(foreign_key="question.id", index=True)
     opportunity_id: int = Field(foreign_key="opportunity.id", index=True)
     round_id: Optional[int] = Field(default=None, foreign_key="interviewround.id")
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户（冗余，随题目）
     created_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -124,6 +189,7 @@ class Resume(SQLModel, table=True):
     """简历版本库。"""
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户
     name: str = Field(index=True)  # 版本名，如「Java 后端-v3-强调高并发」
     filename: str                  # 原始文件名
     filepath: str                  # 本地存储路径
@@ -135,6 +201,7 @@ class Resume(SQLModel, table=True):
     score: Optional[int] = None    # AI 简历体检得分 0-100
     review_json: Optional[str] = None     # 优化建议 JSON：{"suggestions":[{title,detail,level}]}
     questions_json: Optional[str] = None  # 预测面试题 JSON：{"questions":[{tag,q,a}]}
+    questions_direction: Optional[str] = None  # 最近一次生成预测题时指定的出题方向（空为综合出题）
     is_default: bool = Field(default=False, index=True)  # 默认简历（新投递自动选用）
     note: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.now)
@@ -145,6 +212,7 @@ class Offer(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     opportunity_id: int = Field(foreign_key="opportunity.id", unique=True, index=True)
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户（冗余，随岗位）
     # 薪资结构
     monthly_salary: Optional[float] = None  # 月薪（K）
     months: Optional[int] = None            # 薪资月数（如 15薪）
@@ -171,6 +239,7 @@ class Recording(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     opportunity_id: int = Field(foreign_key="opportunity.id", index=True)
     round_id: Optional[int] = Field(default=None, foreign_key="interviewround.id", index=True)
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户
     kind: str = Field(default="recording", index=True)  # recording=录音复盘 / text=文字复盘
     filename: str                 # 原始文件名（文字复盘为标题）
     filepath: str                 # data/uploads/recordings/ 内路径
@@ -196,6 +265,7 @@ class ReviewReport(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     recording_id: int = Field(foreign_key="recording.id", unique=True, index=True)
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户（冗余，随录音）
     model: str                     # 生成使用的模型
     resume_id: Optional[int] = None
     report: str                    # 结构化报告 JSON
@@ -209,6 +279,7 @@ class ResearchNote(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     opportunity_id: int = Field(foreign_key="opportunity.id", index=True)
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户（冗余，随岗位）
     note_type: str = Field(default="company", index=True)  # 见 NOTE_TYPES
     content: str = ""                  # Markdown 正文
     ai_generated: bool = Field(default=False)  # 当前内容是否来自 AI 提纲（供界面标注）
@@ -220,6 +291,7 @@ class MatchReport(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     opportunity_id: int = Field(foreign_key="opportunity.id", unique=True, index=True)
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户（冗余，随岗位）
     resume_id: Optional[int] = Field(default=None, foreign_key="resume.id")  # 评估所用简历
     model: str                     # 生成使用的模型
     report: str                    # 结构化报告 JSON
@@ -232,6 +304,7 @@ class ResearchMaterial(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     opportunity_id: int = Field(foreign_key="opportunity.id", index=True)
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户（冗余，随岗位）
     source_type: str = "url"       # url: 直抓 / browser: CDP 浏览器抓取 / manual: 手动粘贴
     title: str = ""                # 页面标题或用户命名
     url: Optional[str] = None
@@ -244,6 +317,7 @@ class Prediction(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     opportunity_id: int = Field(foreign_key="opportunity.id", index=True)
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户（冗余，随岗位）
     round_type: str = Field(default="first", index=True)  # 目标轮次，见 ROUND_TYPES
     model: str                     # 生成使用的模型
     report: str                    # 结构化题单 JSON
@@ -256,6 +330,7 @@ class MockInterview(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     opportunity_id: int = Field(foreign_key="opportunity.id", index=True)
+    user_id: Optional[int] = Field(default=None, index=True)  # 归属用户
     round_type: str = "first"
     model: str = ""
     status: str = Field(default="ongoing", index=True)  # ongoing / finished

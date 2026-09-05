@@ -3,9 +3,16 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useDialog, useMessage } from 'naive-ui'
 import {
   AddOutline,
+  AppsOutline,
   ArrowBackOutline,
+  ChatbubblesOutline,
+  CloudDownloadOutline,
+  CompassOutline,
   CreateOutline,
   DocumentTextOutline,
+  MicOutline,
+  PulseOutline,
+  PricetagOutline,
   SparklesOutline,
 } from '@vicons/ionicons5'
 import { api } from '../api'
@@ -33,6 +40,7 @@ import {
   avatarGradient,
 } from '../types'
 import { daysSince, eventLabel } from '../utils'
+import { useIsMobile } from '../composables/useIsMobile'
 import MarkdownView from '../components/MarkdownView.vue'
 import MockInterviewPanel from '../components/MockInterviewPanel.vue'
 import OfferModal from '../components/OfferModal.vue'
@@ -42,11 +50,12 @@ import RoundModal from '../components/RoundModal.vue'
 import VChart from '../components/VChart.vue'
 import type { EChartsCoreOption } from 'echarts/core'
 
-const props = defineProps<{ oppId: number | null }>()
+const props = defineProps<{ oppId: number | null; fromList?: boolean }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
 
 const message = useMessage()
 const dialog = useDialog()
+const isMobile = useIsMobile()
 
 const activeTab = ref('overview')
 const loading = ref(true)
@@ -69,8 +78,8 @@ const materialUrls = ref('')
 const materialManualText = ref('')
 const materialManualTitle = ref('')
 const fetchingMaterials = ref(false)
-// 一键生成进度：null = 未在生成
-const generateAll = ref<{ done: number; total: number } | null>(null)
+// 岗位情报任务：null = 空闲；collect = 收集资料阶段；generate = 生成阶段
+const researchJob = ref<null | { phase: 'collect' | 'generate'; done: number; total: number }>(null)
 
 // ---- 匹配度 ----
 const matchResumeId = ref<number | null>(null)
@@ -116,7 +125,14 @@ async function load() {
 }
 
 onMounted(load)
-watch(() => props.oppId, load)
+// 详情页在 AppShell 中是 v-show 保活的：切换公司时重置到概览 tab 并重新加载数据
+watch(
+  () => props.oppId,
+  () => {
+    activeTab.value = 'overview'
+    load()
+  },
+)
 
 const statusMeta = computed(() => STATUSES.find((s) => s.key === opp.value?.status))
 
@@ -220,7 +236,10 @@ async function generateAllNotes() {
       content: '已有内容的板块将被覆盖重新生成，确定继续？',
       positiveText: '全部重新生成',
       negativeText: '取消',
-      onPositiveClick: () => runGenerateAll(),
+      // 不返回 Promise：让弹窗立即关闭，由全页遮罩承担生成中的反馈
+      onPositiveClick: () => {
+        runGenerateAll()
+      },
     })
   } else {
     await runGenerateAll()
@@ -230,7 +249,7 @@ async function generateAllNotes() {
 async function runGenerateAll() {
   if (!opp.value) return
   const types = NOTE_TYPE_META.map((m) => m.key)
-  generateAll.value = { done: 0, total: types.length }
+  researchJob.value = { phase: 'generate', done: 0, total: types.length }
   const results = await Promise.allSettled(
     types.map((t) => api.generateOutline(opp.value!.id, t, true)),
   )
@@ -240,12 +259,48 @@ async function runGenerateAll() {
       if (idx >= 0) notes.value[idx] = res.value
       else notes.value.push(res.value)
     }
-    generateAll.value = { done: generateAll.value!.done + 1, total: types.length }
+    researchJob.value = { phase: 'generate', done: researchJob.value!.done + 1, total: types.length }
   })
-  generateAll.value = null
+  researchJob.value = null
   const ok = results.filter((r) => r.status === 'fulfilled').length
   if (ok === types.length) message.success('全部情报已生成')
   else message.warning(`生成完成：${ok}/${types.length} 个板块成功`)
+}
+
+/** 自动调研：先到多渠道收集公司资料，收集完自动生成全部情报 */
+async function autoResearchFlow() {
+  if (!opp.value || researchJob.value) return
+  const hasContent = NOTE_TYPE_META.some((m) => noteByType.value[m.key]?.content?.trim())
+  if (hasContent) {
+    dialog.warning({
+      title: '自动调研',
+      content: '将先到维基百科 / 百度百科 / 企查查 / 爱企查 / 小红书 / 知乎 / 脉脉 收集资料（约 1~3 分钟），已有内容的情报板块会被覆盖重新生成。确定继续？',
+      positiveText: '开始自动调研',
+      negativeText: '取消',
+      onPositiveClick: () => {
+        runAutoResearch()
+      },
+    })
+  } else {
+    await runAutoResearch()
+  }
+}
+
+async function runAutoResearch() {
+  if (!opp.value) return
+  researchJob.value = { phase: 'collect', done: 0, total: 0 }
+  try {
+    const res = await api.autoResearch(opp.value.id)
+    materials.value = [...res.saved, ...materials.value]
+    const failNote = res.failed.length ? `；${res.failed.length} 个来源失败` : ''
+    if (res.saved.length) message.success(`已收集 ${res.saved.length} 份新资料${failNote}`)
+    else if (res.failed.length) message.warning(res.failed[0].source + '：' + res.failed[0].error, { duration: 6000 })
+  } catch (e) {
+    researchJob.value = null
+    message.error((e as Error).message || '资料收集失败', { duration: 6000 })
+    return
+  }
+  await runGenerateAll()
 }
 
 async function submitMaterials() {
@@ -549,23 +604,25 @@ function deleteOpportunity() {
 <template>
   <div class="flex h-full flex-col overflow-hidden bg-zinc-50/60">
     <!-- 顶栏 -->
-    <div class="flex shrink-0 items-center gap-3 border-b border-zinc-200/70 bg-white px-5 py-3">
+    <div
+      class="flex shrink-0 items-center gap-3 border-b border-zinc-200/70 bg-white px-5 py-3 max-md:flex-wrap max-md:gap-x-2 max-md:gap-y-1.5 max-md:px-3"
+    >
       <button
-        class="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] text-zinc-500 transition-colors hover:bg-zinc-100"
+        class="flex shrink-0 items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] text-zinc-500 transition-colors hover:bg-zinc-100 max-md:whitespace-nowrap"
         @click="emit('back')"
       >
         <n-icon :component="ArrowBackOutline" :size="15" />
-        返回看板
+        {{ props.fromList ? '返回列表' : '返回看板' }}
       </button>
       <template v-if="opp">
-        <div class="mx-1 h-5 w-px bg-zinc-200" />
+        <div class="mx-1 h-5 w-px bg-zinc-200 max-md:hidden" />
         <div
           class="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-[15px] font-bold text-white shadow-sm"
           :style="{ background: avatarGradient(opp.company) }"
         >
           {{ opp.company.slice(0, 1) }}
         </div>
-        <div class="min-w-0">
+        <div class="min-w-0 flex-1 max-md:basis-[120px]">
           <div class="flex items-center gap-2">
             <span class="truncate text-[15px] font-bold text-zinc-900">{{ opp.company }}</span>
             <span
@@ -579,16 +636,16 @@ function deleteOpportunity() {
               {{ opp.priority }}
             </span>
           </div>
-          <div class="mt-0.5 flex items-center gap-1.5 text-[12px] text-zinc-500">
+          <div class="mt-0.5 flex items-center gap-1.5 text-[12px] text-zinc-500 max-md:flex-wrap">
             <span
-              class="inline-block h-1.5 w-1.5 rounded-full"
+              class="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
               :style="{ background: statusMeta?.color ?? '#94a3b8' }"
             />
-            {{ statusMeta?.label ?? opp.status }}
-            <span class="text-zinc-300">·</span>
+            <span class="whitespace-nowrap">{{ statusMeta?.label ?? opp.status }}</span>
+            <span class="shrink-0 text-zinc-300">·</span>
             <span class="truncate">{{ opp.position }}</span>
-            <span class="text-zinc-300">·</span>
-            停留 {{ daysSince(opp.status_changed_at) }} 天
+            <span class="shrink-0 text-zinc-300">·</span>
+            <span class="whitespace-nowrap">停留 {{ daysSince(opp.status_changed_at) }} 天</span>
           </div>
         </div>
         <div class="ml-auto flex shrink-0 gap-2">
@@ -607,10 +664,17 @@ function deleteOpportunity() {
 
     <!-- 内容区 -->
     <template v-else-if="opp">
-      <n-tabs v-model:value="activeTab" type="line" class="min-h-0 flex-1 px-5">
+      <n-tabs
+        v-model:value="activeTab"
+        :type="isMobile ? 'line' : 'segment'"
+        class="min-h-0 flex-1 px-5 max-md:px-3"
+      >
         <!-- 概览 -->
-        <n-tab-pane name="overview" tab="概览">
-          <div class="max-h-[calc(100vh-180px)] overflow-y-auto pb-8">
+        <n-tab-pane name="overview">
+          <template #tab>
+            <span class="flex items-center gap-1.5"><n-icon :component="AppsOutline" :size="14" />概览</span>
+          </template>
+          <div class="max-h-[calc(100vh-180px)] overflow-y-auto pb-8 max-md:max-h-[calc(100dvh-150px)]">
             <div class="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
               <div v-for="item in metaItems" :key="item.label" class="rounded-xl bg-white px-3.5 py-2.5 shadow-sm">
                 <div class="text-[11px] text-zinc-400">{{ item.label }}</div>
@@ -652,51 +716,55 @@ function deleteOpportunity() {
         </n-tab-pane>
 
         <!-- 岗位情报 -->
-        <n-tab-pane name="research" tab="岗位情报">
-          <div class="flex h-[calc(100vh-190px)] flex-col gap-3">
+        <n-tab-pane name="research">
+          <template #tab>
+            <span class="flex items-center gap-1.5"><n-icon :component="CompassOutline" :size="14" />岗位情报</span>
+          </template>
+          <div class="flex h-[calc(100vh-190px)] flex-col gap-3 max-md:h-auto max-md:max-h-[calc(100dvh-150px)] max-md:overflow-y-auto">
             <!-- 顶部工具栏 -->
             <div class="flex shrink-0 items-center gap-2">
-              <n-button size="small" type="primary" :loading="generateAll !== null" @click="generateAllNotes">
+              <n-button size="small" type="primary" :loading="researchJob !== null" @click="autoResearchFlow">
                 <template #icon><n-icon :component="SparklesOutline" :size="14" /></template>
-                一键生成全部
+                自动调研
               </n-button>
-              <span v-if="generateAll" class="text-[12px] text-indigo-600">
-                生成中 {{ generateAll.done }}/{{ generateAll.total }}…
-              </span>
-              <span v-else class="text-[11.5px] text-zinc-400">并行生成五大板块，已有内容会被覆盖</span>
+              <n-button size="small" :disabled="researchJob !== null" @click="generateAllNotes">一键生成全部</n-button>
+              <span class="hidden text-[11.5px] text-zinc-400 xl:inline">自动调研 = 收集资料 + 生成全部；一键生成仅按已有资料重新生成</span>
               <n-button size="small" class="ml-auto" @click="materialModalShow = true">
                 <template #icon><n-icon :component="CloudDownloadOutline" :size="14" /></template>
                 抓取资料
               </n-button>
             </div>
 
-            <div class="flex min-h-0 flex-1 gap-4">
-              <!-- 左：类型列表 + 参考资料 -->
-              <div class="flex w-[190px] shrink-0 flex-col gap-1.5 overflow-y-auto">
-                <button
-                  v-for="meta in NOTE_TYPE_META"
-                  :key="meta.key"
-                  class="rounded-xl border px-3 py-2.5 text-left transition-colors"
-                  :class="
-                    activeNoteType === meta.key
-                      ? 'border-indigo-200 bg-indigo-50/80'
-                      : 'border-transparent bg-white hover:border-zinc-200'
-                  "
-                  @click="switchNoteType(meta.key)"
-                >
-                  <div class="flex items-center justify-between">
-                    <span
-                      class="text-[13px] font-semibold"
-                      :class="activeNoteType === meta.key ? 'text-indigo-600' : 'text-zinc-700'"
-                    >{{ meta.label }}</span>
-                    <span
-                      v-if="noteByType[meta.key]?.content"
-                      class="h-1.5 w-1.5 rounded-full bg-emerald-400"
-                      title="已有内容"
-                    />
-                  </div>
-                  <div class="mt-0.5 text-[11px] leading-snug text-zinc-400">{{ meta.hint }}</div>
-                </button>
+            <div class="flex min-h-0 flex-1 gap-4 max-md:flex-col max-md:gap-3">
+              <!-- 左：类型列表 + 参考资料；移动端类型压为横向滑动条 -->
+              <div class="flex w-[190px] shrink-0 flex-col gap-1.5 overflow-y-auto max-md:w-full">
+                <!-- PC 端 display:contents 不影响布局，移动端变为横向滚动条 -->
+                <div class="contents max-md:flex max-md:gap-1.5 max-md:overflow-x-auto max-md:pb-1">
+                  <button
+                    v-for="meta in NOTE_TYPE_META"
+                    :key="meta.key"
+                    class="rounded-xl border px-3 py-2.5 text-left transition-colors max-md:w-auto max-md:shrink-0 max-md:whitespace-nowrap"
+                    :class="
+                      activeNoteType === meta.key
+                        ? 'border-indigo-200 bg-indigo-50/80'
+                        : 'border-transparent bg-white hover:border-zinc-200'
+                    "
+                    @click="switchNoteType(meta.key)"
+                  >
+                    <div class="flex items-center justify-between gap-2">
+                      <span
+                        class="text-[13px] font-semibold"
+                        :class="activeNoteType === meta.key ? 'text-indigo-600' : 'text-zinc-700'"
+                      >{{ meta.label }}</span>
+                      <span
+                        v-if="noteByType[meta.key]?.content"
+                        class="h-1.5 w-1.5 rounded-full bg-emerald-400"
+                        title="已有内容"
+                      />
+                    </div>
+                    <div class="mt-0.5 text-[11px] leading-snug text-zinc-400 max-md:hidden">{{ meta.hint }}</div>
+                  </button>
+                </div>
 
                 <!-- 参考资料 -->
                 <div class="mt-2 border-t border-zinc-100 pt-2">
@@ -718,7 +786,7 @@ function deleteOpportunity() {
                     >{{ m.source_type === 'manual' ? '粘贴' : '网页' }}</span>
                     <span class="min-w-0 flex-1 truncate text-[11.5px] text-zinc-600" :title="m.title">{{ m.title }}</span>
                     <span
-                      class="hidden shrink-0 cursor-pointer text-[11px] text-zinc-400 hover:text-rose-500 group-hover:inline"
+                      class="hidden shrink-0 cursor-pointer text-[11px] text-zinc-400 hover:text-rose-500 group-hover:inline max-md:inline"
                       @click="removeMaterial(m)"
                     >删</span>
                   </div>
@@ -765,7 +833,7 @@ function deleteOpportunity() {
                   v-model:value="noteDraft"
                   type="textarea"
                   placeholder="支持 Markdown：## 小节、- 列表、**加粗**"
-                  class="min-h-0 flex-1"
+                  class="min-h-0 flex-1 max-md:min-h-[240px]"
                   :input-props="{ spellcheck: false }"
                 />
                 <template v-else-if="currentNote?.content">
@@ -787,8 +855,11 @@ function deleteOpportunity() {
         </n-tab-pane>
 
         <!-- 匹配度 -->
-        <n-tab-pane name="match" tab="匹配度">
-          <div class="max-h-[calc(100vh-180px)] overflow-y-auto pb-8">
+        <n-tab-pane name="match">
+          <template #tab>
+            <span class="flex items-center gap-1.5"><n-icon :component="PulseOutline" :size="14" />匹配度</span>
+          </template>
+          <div class="max-h-[calc(100vh-180px)] overflow-y-auto pb-8 max-md:max-h-[calc(100dvh-150px)]">
             <!-- 生成中 -->
             <div v-if="generating" class="grid place-items-center rounded-2xl border border-dashed border-indigo-200 bg-white py-16">
               <div class="text-center">
@@ -800,7 +871,7 @@ function deleteOpportunity() {
 
             <!-- 无报告 -->
             <div v-else-if="!matchReport" class="grid place-items-center rounded-2xl border border-dashed border-zinc-200 bg-white py-16">
-              <div class="w-[400px] text-center">
+              <div class="w-[400px] text-center max-md:w-full max-md:px-2">
                 <div class="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-indigo-50 text-indigo-500">
                   <n-icon :component="DocumentTextOutline" :size="24" />
                 </div>
@@ -930,7 +1001,7 @@ function deleteOpportunity() {
                   clearable
                   filterable
                   size="small"
-                  class="w-[280px]"
+                  class="!w-[280px] max-md:!w-full"
                   :options="resumes.map((r) => ({ label: r.is_default ? `★ ${r.name}（默认）` : r.name, value: r.id }))"
                   placeholder="换一份简历重新评估"
                 />
@@ -945,18 +1016,27 @@ function deleteOpportunity() {
         </n-tab-pane>
 
         <!-- 题目预测 -->
-        <n-tab-pane name="predict" tab="题目预测">
-          <PredictionPanel :opportunity="opp" />
+        <n-tab-pane name="predict">
+          <template #tab>
+            <span class="flex items-center gap-1.5"><n-icon :component="SparklesOutline" :size="14" />题目预测</span>
+          </template>
+          <PredictionPanel :key="opp.id" :opportunity="opp" />
         </n-tab-pane>
 
         <!-- 模拟面试 -->
-        <n-tab-pane name="mock" tab="模拟面试">
-          <MockInterviewPanel :opportunity="opp" />
+        <n-tab-pane name="mock">
+          <template #tab>
+            <span class="flex items-center gap-1.5"><n-icon :component="ChatbubblesOutline" :size="14" />模拟面试</span>
+          </template>
+          <MockInterviewPanel :key="opp.id" :opportunity="opp" />
         </n-tab-pane>
 
         <!-- 轮次与录音 -->
-        <n-tab-pane name="rounds" tab="轮次与录音">
-          <div class="grid max-h-[calc(100vh-180px)] grid-cols-1 gap-4 overflow-y-auto pb-8 xl:grid-cols-2">
+        <n-tab-pane name="rounds">
+          <template #tab>
+            <span class="flex items-center gap-1.5"><n-icon :component="MicOutline" :size="14" />轮次与录音</span>
+          </template>
+          <div class="grid max-h-[calc(100vh-180px)] grid-cols-1 gap-4 overflow-y-auto pb-8 max-md:max-h-[calc(100dvh-150px)] xl:grid-cols-2">
             <div class="rounded-2xl border border-zinc-100 bg-white p-4">
               <div class="mb-3 flex items-center justify-between">
                 <h3 class="text-[13.5px] font-semibold text-zinc-800">面试轮次（{{ sortedRounds.length }}）</h3>
@@ -987,7 +1067,7 @@ function deleteOpportunity() {
                     >
                       {{ (ROUND_RESULT_META[r.result] ?? ROUND_RESULT_META.pending).label }}
                     </span>
-                    <span class="hidden shrink-0 gap-1 group-hover:flex">
+                    <span class="hidden shrink-0 gap-1 group-hover:flex max-md:flex">
                       <n-button size="tiny" quaternary @click="editRound(r)">编辑</n-button>
                       <n-button size="tiny" quaternary type="error" @click="deleteRound(r)">删除</n-button>
                     </span>
@@ -1027,8 +1107,11 @@ function deleteOpportunity() {
         </n-tab-pane>
 
         <!-- Offer -->
-        <n-tab-pane name="offer" tab="Offer">
-          <div class="max-h-[calc(100vh-180px)] overflow-y-auto pb-8">
+        <n-tab-pane name="offer">
+          <template #tab>
+            <span class="flex items-center gap-1.5"><n-icon :component="PricetagOutline" :size="14" />Offer</span>
+          </template>
+          <div class="max-h-[calc(100vh-180px)] overflow-y-auto pb-8 max-md:max-h-[calc(100dvh-150px)]">
             <div v-if="offer" class="rounded-2xl border border-zinc-100 bg-white p-4">
               <div class="mb-3 flex items-center justify-between">
                 <h3 class="text-[13.5px] font-semibold text-zinc-800">Offer 信息</h3>
@@ -1085,5 +1168,80 @@ function deleteOpportunity() {
       @saved="onRoundSaved"
     />
     <OfferModal v-model:show="offerShow" :opportunity="opp" :existing="offer" @saved="onOfferSaved" />
+
+    <!-- 岗位情报任务：全页遮罩 -->
+    <div
+      v-if="researchJob"
+      class="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-900/20 backdrop-blur-[2px]"
+    >
+      <div class="flex w-[360px] flex-col items-center gap-3 rounded-2xl bg-white px-8 py-8 shadow-2xl max-md:w-[calc(100vw-32px)]">
+        <n-spin size="30" />
+        <div class="text-[14.5px] font-semibold text-zinc-800">
+          {{ researchJob.phase === 'collect' ? '正在收集公司资料' : '正在生成岗位情报' }}
+        </div>
+        <template v-if="researchJob.phase === 'collect'">
+          <div class="w-full rounded-xl bg-zinc-50 px-4 py-3 text-[12px] leading-relaxed text-zinc-500">
+            正在到以下渠道收集「{{ opp?.company }}」的公开资料：<br />
+            维基百科 · 百度百科 · 企查查 · 爱企查 · 小红书 · 知乎 · 脉脉<br />
+            （抓取被拦截的渠道会自动跳过，不影响后续生成）
+          </div>
+          <div class="text-[12px] text-zinc-400">约需 1~3 分钟，请稍候</div>
+        </template>
+        <template v-else>
+          <div class="h-1.5 w-full overflow-hidden rounded-full bg-zinc-100">
+            <div
+              class="h-full rounded-full bg-indigo-500 transition-all duration-700"
+              :style="{ width: Math.max(8, (researchJob.done / researchJob.total) * 100) + '%' }"
+            />
+          </div>
+          <div class="text-[12px] text-zinc-400">
+            已完成 {{ researchJob.done }}/{{ researchJob.total }} 个板块 · 五个板块并行生成，约需 1~2 分钟
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- 抓取资料弹窗 -->
+    <n-modal
+      v-model:show="materialModalShow"
+      preset="card"
+      title="抓取参考资料"
+      class="!w-[560px] max-md:!w-[calc(100vw-16px)]"
+      :mask-closable="false"
+    >
+      <div class="flex flex-col gap-3">
+        <div>
+          <div class="mb-1 text-[12.5px] font-medium text-zinc-700">网页链接（每行一个）</div>
+          <n-input
+            v-model:value="materialUrls"
+            type="textarea"
+            :autosize="{ minRows: 3, maxRows: 6 }"
+            placeholder="https://baike.baidu.com/item/公司名&#10;https://zh.wikipedia.org/wiki/公司名&#10;公司官网 / 新闻报道 / 看准网页面…"
+          />
+          <p class="mt-1 text-[11px] leading-relaxed text-zinc-400">
+            先尝试直接抓取；被反爬拦截时自动改走你的专用浏览器（需已运行 start-boss-browser.bat）。脉脉 / 看准等登录类站点请先在专用浏览器登录
+          </p>
+        </div>
+        <div>
+          <div class="mb-1 text-[12.5px] font-medium text-zinc-700">或直接粘贴资料文本</div>
+          <n-input
+            v-model:value="materialManualTitle"
+            size="small"
+            placeholder="资料标题（可选），如：脉脉上的面试评价"
+          />
+          <n-input
+            v-model:value="materialManualText"
+            type="textarea"
+            :autosize="{ minRows: 3, maxRows: 6 }"
+            class="mt-2"
+            placeholder="粘贴看到的资料内容…"
+          />
+        </div>
+        <div class="flex justify-end gap-2">
+          <n-button @click="materialModalShow = false">取消</n-button>
+          <n-button type="primary" :loading="fetchingMaterials" @click="submitMaterials">开始抓取</n-button>
+        </div>
+      </div>
+    </n-modal>
   </div>
 </template>

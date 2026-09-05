@@ -310,7 +310,9 @@ async function addToBank(idx: number, q: ReviewQuestion) {
   if (!rec.value) return
   bankSaving.add(idx)
   try {
-    await api.createQuestion({
+    // 复盘的 improved 示范回答遵循题库同一标准：直接带入；旧报告没有时入库后走统一入口生成
+    const answer = q.improved?.trim() || null
+    const saved = await api.createQuestion({
       content: q.question,
       dimension: q.topic || '其他',
       difficulty: 'medium',
@@ -324,11 +326,13 @@ async function addToBank(idx: number, q: ReviewQuestion) {
       ],
       my_answer: q.my_answer || null,
       answer_key: q.reference || null,
+      answer_spoken: answer,
       self_rating: Math.round((q.scores.structure + q.scores.depth + q.scores.clarity) / 3),
       mastery: 'unknown',
     })
+    if (!answer) await api.generateAnswer({ question_id: saved.id })
     savedBank.add(idx)
-    message.success('已存入题库')
+    message.success(answer ? '已存入题库，示范回答已一并带入' : '已存入题库，AI 答案已生成')
   } catch (e) {
     message.error((e as Error).message || '存入失败')
   } finally {
@@ -428,7 +432,7 @@ const tabs = computed(() => [
     <!-- 顶栏 -->
     <header
       v-if="rec"
-      class="flex items-center justify-between gap-3 border-b border-zinc-200/70 bg-white px-6 py-3.5"
+      class="flex items-center justify-between gap-3 border-b border-zinc-200/70 bg-white px-6 py-3.5 max-md:flex-wrap max-md:px-4"
     >
       <div class="flex min-w-0 items-center gap-3">
         <n-button quaternary size="small" @click="emit('back')">
@@ -458,20 +462,20 @@ const tabs = computed(() => [
         </div>
       </div>
 
-      <div class="flex shrink-0 items-center gap-2.5">
+      <div class="flex shrink-0 items-center gap-2.5 max-md:w-full max-md:flex-wrap">
         <n-select
           v-model:value="resumeId"
           size="small"
           clearable
           placeholder="简历：跟随岗位关联"
-          style="width: 190px"
+          class="!w-[190px] max-md:!w-full max-md:!flex-1"
           :options="resumes.map((r) => ({ label: r.name, value: r.id }))"
         />
         <a
           v-if="!isText"
           :href="fileUrl"
           :download="rec.filename"
-          class="flex items-center gap-1.5 rounded-lg border border-zinc-200 px-3 py-1.5 text-[12.5px] font-medium text-zinc-600 transition-colors hover:border-indigo-200 hover:text-indigo-600"
+          class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-zinc-200 px-3 py-1.5 text-[12.5px] font-medium text-zinc-600 transition-colors hover:border-indigo-200 hover:text-indigo-600"
           title="下载原始录音"
         >
           <n-icon :component="DownloadOutline" :size="14" />
@@ -483,7 +487,7 @@ const tabs = computed(() => [
           :options="transcribeOptions"
           @select="onTranscribeSelect"
         >
-          <n-button size="small" secondary>
+          <n-button size="small" secondary class="shrink-0 whitespace-nowrap">
             <n-icon :component="MicOutline" :size="15" class="mr-1" />
             转写
           </n-button>
@@ -492,6 +496,7 @@ const tabs = computed(() => [
           v-if="hasReport"
           size="small"
           secondary
+          class="shrink-0 whitespace-nowrap"
           @click="exportMarkdown"
         >
           <n-icon :component="DownloadOutline" :size="15" class="mr-1" />
@@ -502,6 +507,7 @@ const tabs = computed(() => [
           size="small"
           type="primary"
           :loading="generating"
+          class="shrink-0 whitespace-nowrap"
           @click="generateReview"
         >
           <n-icon :component="SparklesOutline" :size="15" class="mr-1" />
@@ -512,7 +518,7 @@ const tabs = computed(() => [
 
     <div v-if="!rec" class="grid flex-1 place-items-center text-sm text-zinc-400">正在加载…</div>
 
-    <div v-else class="grid min-h-0 flex-1 gap-3.5 overflow-hidden p-5 xl:grid-cols-5">
+    <div v-else class="grid min-h-0 flex-1 gap-3.5 overflow-hidden p-5 max-md:overflow-y-auto max-md:p-4 xl:grid-cols-5">
       <!-- 左列：状态 + 录音文件 + 文字稿 -->
       <div class="flex min-h-0 flex-col gap-3.5 xl:col-span-2">
         <div class="rounded-2xl border border-zinc-200/70 bg-white p-4">
@@ -700,7 +706,7 @@ const tabs = computed(() => [
 
         <!-- 报告正文：标签导航 -->
         <template v-else-if="report">
-          <div class="mb-3.5 flex items-center gap-1 rounded-xl bg-zinc-100/80 p-1">
+          <div class="mb-3.5 flex items-center gap-1 rounded-xl bg-zinc-100/80 p-1 max-md:overflow-x-auto">
             <button
               v-for="t in tabs"
               :key="t.key"
@@ -1019,6 +1025,7 @@ const tabs = computed(() => [
                       size="tiny"
                       :type="savedBank.has(i) ? 'default' : 'primary'"
                       :disabled="savedBank.has(i)"
+                      :loading="bankSaving.has(i)"
                       secondary
                       @click="addToBank(i, q)"
                     >

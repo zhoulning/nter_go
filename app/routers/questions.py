@@ -7,15 +7,16 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.auth import get_current_user
 from app.database import get_session
-from app.models import InterviewRound, Opportunity, Question, QuestionSource, Resume
+from app.models import InterviewRound, Opportunity, Question, QuestionSource, Resume, User
 
 router = APIRouter()
 
 # 后端方向预置维度，用户也可在新增时自定义
 DIMENSION_PRESETS = [
     "语言特性",
-    "并发编程",
+    "JUC",
     "JVM",
     "MySQL",
     "Redis",
@@ -74,19 +75,19 @@ class QuestionUpdate(BaseModel):
     review_done: Optional[bool] = None
 
 
-def _validate_sources(session: Session, sources: list[SourceIn]) -> None:
-    """校验来源里的岗位 / 轮次存在且从属关系正确。"""
+def _validate_sources(session: Session, sources: list[SourceIn], user: User) -> None:
+    """校验来源里的岗位 / 轮次属于当前用户且从属关系正确。"""
     for src in sources:
         opp = session.get(Opportunity, src.opportunity_id)
-        if opp is None:
+        if opp is None or opp.user_id != user.id:
             raise HTTPException(status_code=400, detail="题目来源的岗位不存在")
         if src.round_id is not None:
             rnd = session.get(InterviewRound, src.round_id)
-            if rnd is None or rnd.opportunity_id != src.opportunity_id:
+            if rnd is None or rnd.user_id != user.id or rnd.opportunity_id != src.opportunity_id:
                 raise HTTPException(status_code=400, detail="轮次与岗位不匹配")
 
 
-def _replace_sources(session: Session, question_id: int, sources: list[SourceIn]) -> None:
+def _replace_sources(session: Session, question_id: int, sources: list[SourceIn], user_id: int) -> None:
     """整体替换某题的来源列表。"""
     for old in session.exec(
         select(QuestionSource).where(QuestionSource.question_id == question_id)
@@ -98,6 +99,7 @@ def _replace_sources(session: Session, question_id: int, sources: list[SourceIn]
                 question_id=question_id,
                 opportunity_id=src.opportunity_id,
                 round_id=src.round_id,
+                user_id=user_id,
             )
         )
 
@@ -132,11 +134,21 @@ def _question_dict(
 
 
 def _load_dicts(questions: list[Question], session: Session) -> list[dict]:
-    opps = {o.id: o for o in session.exec(select(Opportunity)).all()}
-    rounds = {r.id: r for r in session.exec(select(InterviewRound)).all()}
-    resumes = {r.id: r for r in session.exec(select(Resume)).all()}
+    # 同一批题目必属同一用户，用第一题的归属过滤关联数据
+    owner_id = questions[0].user_id if questions else None
+    opps = {
+        o.id: o
+        for o in session.exec(select(Opportunity).where(Opportunity.user_id == owner_id)).all()
+    }
+    rounds = {
+        r.id: r
+        for r in session.exec(select(InterviewRound).where(InterviewRound.user_id == owner_id)).all()
+    }
+    resumes = {
+        r.id: r for r in session.exec(select(Resume).where(Resume.user_id == owner_id)).all()
+    }
     sources_by_q: dict[int, list[QuestionSource]] = {}
-    for s in session.exec(select(QuestionSource)).all():
+    for s in session.exec(select(QuestionSource).where(QuestionSource.user_id == owner_id)).all():
         sources_by_q.setdefault(s.question_id, []).append(s)
     return [
         _question_dict(q, opps, rounds, resumes, sources_by_q) for q in questions
@@ -149,26 +161,56 @@ def backfill_question_sources(session: Session) -> None:
     added = False
     for q in session.exec(select(Question)).all():
         if q.opportunity_id and (q.id, q.opportunity_id) not in existing:
-            session.add(QuestionSource(question_id=q.id, opportunity_id=q.opportunity_id))
+            session.add(
+                QuestionSource(
+                    question_id=q.id,
+                    opportunity_id=q.opportunity_id,
+                    user_id=q.user_id,
+                )
+            )
             added = True
     if added:
         session.commit()
 
 
 @router.get("/questions/meta")
-def question_meta(session: Session = Depends(get_session)):
+def question_meta(
+    user: User = Depends(get_current_user), session: Session = Depends(get_session)
+):
     dims = list(DIMENSION_PRESETS)
-    for row in session.exec(select(Question.dimension).distinct()).all():
+    rows = session.exec(
+        select(Question.dimension).where(Question.user_id == user.id).distinct()
+    ).all()
+    for row in rows:
         if row and row not in dims:
             dims.append(row)
     return {"dimensions": dims}
 
 
+@router.get("/questions/{question_id}/origins")
+def question_origins(
+    question_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """回溯题目在模拟面试 / 真实面试录音中的原问原答（用于答案详情悬浮窗）。"""
+    from app.origins import find_origins
+
+    q = session.get(Question, question_id)
+    if q is None or q.user_id != user.id:
+        raise HTTPException(status_code=404, detail="题目不存在")
+    return find_origins(session, q.content, user.id)
+
+
 @router.get("/questions")
-def list_questions(session: Session = Depends(get_session)):
-    """返回全部题目（个人数据量级，筛选在前端做）。"""
+def list_questions(
+    user: User = Depends(get_current_user), session: Session = Depends(get_session)
+):
+    """返回当前用户的全部题目（个人数据量级，筛选在前端做）。"""
     questions = session.exec(
-        select(Question).order_by(Question.updated_at.desc())
+        select(Question)
+        .where(Question.user_id == user.id)
+        .order_by(Question.updated_at.desc())
     ).all()
     return {
         "items": _load_dicts(list(questions), session),
@@ -177,7 +219,11 @@ def list_questions(session: Session = Depends(get_session)):
 
 
 @router.post("/questions")
-def create_question(body: QuestionCreate, session: Session = Depends(get_session)):
+def create_question(
+    body: QuestionCreate,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
     if body.difficulty not in DIFFICULTIES:
         raise HTTPException(status_code=400, detail="非法难度")
     if body.source not in SOURCES:
@@ -189,17 +235,20 @@ def create_question(body: QuestionCreate, session: Session = Depends(get_session
     if body.self_rating is not None and not (1 <= body.self_rating <= 5):
         raise HTTPException(status_code=400, detail="自评分需在 1-5 之间")
     if body.sources:
-        _validate_sources(session, body.sources)
+        _validate_sources(session, body.sources, user)
 
     data = body.model_dump()
+    # AI 生成的题目（题单预测 / 模拟面试存题）维度必须落在预设内，避免自造近似维度
+    if data["source"] == "predicted" and data["dimension"] not in DIMENSION_PRESETS:
+        data["dimension"] = "其他"
     sources = data.pop("sources") or []
     if sources:
         data["opportunity_id"] = sources[0]["opportunity_id"]
-    q = Question(**data)
+    q = Question(**data, user_id=user.id)
     session.add(q)
     session.flush()
     if sources:
-        _replace_sources(session, q.id, [SourceIn(**s) for s in sources])
+        _replace_sources(session, q.id, [SourceIn(**s) for s in sources], user.id)
     session.commit()
     session.refresh(q)
     return _load_dicts([q], session)[0]
@@ -207,10 +256,13 @@ def create_question(body: QuestionCreate, session: Session = Depends(get_session
 
 @router.patch("/questions/{question_id}")
 def update_question(
-    question_id: int, body: QuestionUpdate, session: Session = Depends(get_session)
+    question_id: int,
+    body: QuestionUpdate,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
 ):
     q = session.get(Question, question_id)
-    if q is None:
+    if q is None or q.user_id != user.id:
         raise HTTPException(status_code=404, detail="题目不存在")
     changed = body.model_dump(exclude_unset=True)
     if "difficulty" in changed and changed["difficulty"] not in DIFFICULTIES:
@@ -224,8 +276,8 @@ def update_question(
     new_sources = changed.pop("sources", None)
     if new_sources is not None:
         sources = [SourceIn(**s) for s in new_sources]
-        _validate_sources(session, sources)
-        _replace_sources(session, q.id, sources)
+        _validate_sources(session, sources, user)
+        _replace_sources(session, q.id, sources, user.id)
         # 同步主来源字段，兼容旧的筛选/展示逻辑
         q.opportunity_id = sources[0].opportunity_id if sources else None
 
@@ -239,9 +291,13 @@ def update_question(
 
 
 @router.delete("/questions/{question_id}")
-def delete_question(question_id: int, session: Session = Depends(get_session)):
+def delete_question(
+    question_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
     q = session.get(Question, question_id)
-    if q is None:
+    if q is None or q.user_id != user.id:
         raise HTTPException(status_code=404, detail="题目不存在")
     for s in session.exec(
         select(QuestionSource).where(QuestionSource.question_id == question_id)

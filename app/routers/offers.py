@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlmodel import Session, select
 
+from app.auth import get_current_user
 from app.database import get_session
-from app.models import Offer, Opportunity
+from app.models import Offer, Opportunity, User
 
 router = APIRouter()
 
@@ -61,10 +62,19 @@ def _offer_dict(offer: Offer, opp: Opportunity | None) -> dict:
     return data
 
 
+def _get_owned_opportunity(session: Session, opportunity_id: int, user: User) -> Opportunity:
+    opp = session.get(Opportunity, opportunity_id)
+    if opp is None or opp.user_id != user.id:
+        raise HTTPException(status_code=404, detail="岗位不存在")
+    return opp
+
+
 @router.get("/offers")
-def list_offers(session: Session = Depends(get_session)):
-    """全部 Offer 记录，附带岗位的公司/岗位信息。"""
-    rows = session.exec(select(Offer)).all()
+def list_offers(
+    user: User = Depends(get_current_user), session: Session = Depends(get_session)
+):
+    """当前用户的全部 Offer 记录，附带岗位的公司/岗位信息。"""
+    rows = session.exec(select(Offer).where(Offer.user_id == user.id)).all()
     result = []
     for offer in rows:
         opp = session.get(Opportunity, offer.opportunity_id)
@@ -73,16 +83,19 @@ def list_offers(session: Session = Depends(get_session)):
 
 
 @router.put("/offers/{opportunity_id}")
-def upsert_offer(opportunity_id: int, body: OfferUpsert, session: Session = Depends(get_session)):
-    opp = session.get(Opportunity, opportunity_id)
-    if opp is None:
-        raise HTTPException(status_code=404, detail="岗位不存在")
+def upsert_offer(
+    opportunity_id: int,
+    body: OfferUpsert,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    opp = _get_owned_opportunity(session, opportunity_id, user)
 
     offer = session.exec(
         select(Offer).where(Offer.opportunity_id == opportunity_id)
     ).first()
     if offer is None:
-        offer = Offer(opportunity_id=opportunity_id)
+        offer = Offer(opportunity_id=opportunity_id, user_id=user.id)
     for field, value in body.model_dump().items():
         setattr(offer, field, value)
     offer.updated_at = datetime.now()
@@ -93,7 +106,12 @@ def upsert_offer(opportunity_id: int, body: OfferUpsert, session: Session = Depe
 
 
 @router.delete("/offers/{opportunity_id}")
-def delete_offer(opportunity_id: int, session: Session = Depends(get_session)):
+def delete_offer(
+    opportunity_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    _get_owned_opportunity(session, opportunity_id, user)
     offer = session.exec(
         select(Offer).where(Offer.opportunity_id == opportunity_id)
     ).first()

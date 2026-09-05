@@ -34,6 +34,11 @@ const message = useMessage()
 const formRef = ref<FormInst | null>(null)
 const saving = ref(false)
 const aiGenerating = ref(false)
+/** 题干 AI 润色 / 考察维度 AI 选择的 loading */
+const polishing = ref(false)
+const dimPicking = ref(false)
+/** 新增题目保存后自动生成 AI 答案的阶段 */
+const autoGenerating = ref(false)
 const isEdit = computed(() => !!props.question)
 
 interface SourceRow {
@@ -103,6 +108,7 @@ const dimensionOptions = computed(() => {
   if (form.dimension) dims.add(form.dimension)
   return [...dims].map((d) => ({ label: d, value: d }))
 })
+const dimensionValues = computed(() => dimensionOptions.value.map((d) => d.value))
 const masteryOptions = Object.entries(MASTERY_META).map(([value, m]) => ({
   label: m.label,
   value,
@@ -154,6 +160,7 @@ async function genAnswer() {
       content,
       dimension: form.dimension,
       companies,
+      opportunity_id: form.sources.find((s) => s.opportunity_id != null)?.opportunity_id ?? undefined,
     })
     if (res.answer_spoken) form.answer_spoken = res.answer_spoken
     message.success('口述版答案已生成，可继续编辑')
@@ -164,6 +171,53 @@ async function genAnswer() {
   }
 }
 
+// ---- AI 润色题干，并按题目内容自动选择考察维度 ----
+async function polishContent() {
+  const content = form.content.trim()
+  if (!content) {
+    message.warning('请先填写题干内容，再让 AI 润色')
+    return
+  }
+  polishing.value = true
+  try {
+    const res = await api.questionAssist({
+      content,
+      dimensions: dimensionValues.value,
+      task: 'polish',
+    })
+    if (res.content) form.content = res.content
+    if (res.dimension) form.dimension = res.dimension
+    message.success('题干已润色，考察维度已按题目内容自动选择')
+  } catch (e) {
+    message.error((e as Error).message || 'AI 润色失败', { duration: 6000 })
+  } finally {
+    polishing.value = false
+  }
+}
+
+// ---- AI 按题目内容选出考察维度（不改写题干） ----
+async function pickDimension() {
+  const content = form.content.trim()
+  if (!content) {
+    message.warning('请先填写题干内容，AI 才能判断考察维度')
+    return
+  }
+  dimPicking.value = true
+  try {
+    const res = await api.questionAssist({
+      content,
+      dimensions: dimensionValues.value,
+      task: 'dimension',
+    })
+    form.dimension = res.dimension
+    message.success(`考察维度已选为「${res.dimension}」`)
+  } catch (e) {
+    message.error((e as Error).message || 'AI 选择维度失败', { duration: 6000 })
+  } finally {
+    dimPicking.value = false
+  }
+}
+
 async function submit() {
   try {
     await formRef.value?.validate()
@@ -171,6 +225,7 @@ async function submit() {
     return
   }
   saving.value = true
+  let saved: Question
   try {
     const sources: QuestionSourceIn[] = form.sources
       .filter((s) => s.opportunity_id != null)
@@ -189,33 +244,84 @@ async function submit() {
       self_rating: form.self_rating,
       mastery: form.mastery,
     }
-    const saved = isEdit.value
+    saved = isEdit.value
       ? await api.updateQuestion(props.question!.id, payload)
       : await api.createQuestion(payload)
-    emit('saved', saved, !isEdit.value)
-    emit('update:show', false)
   } catch (e) {
     message.error((e as Error).message || '保存失败')
-  } finally {
     saving.value = false
+    return
   }
+
+  // 新题入库后直接生成 AI 答案；失败不回滚，可稍后手动重新生成
+  if (!isEdit.value) {
+    autoGenerating.value = true
+    try {
+      const res = await api.generateAnswer({ question_id: saved.id })
+      if (res.answer_spoken) {
+        message.success('题目已加入题库，AI 答案已生成', { duration: 4000 })
+      } else {
+        message.warning('题目已保存，但 AI 没有返回有效答案，可稍后点「生成 AI 答案」', {
+          duration: 6000,
+        })
+      }
+    } catch (e) {
+      message.error(`题目已保存，但 AI 答案生成失败：${(e as Error).message || '未知错误'}`, {
+        duration: 8000,
+      })
+    } finally {
+      autoGenerating.value = false
+    }
+  } else {
+    message.success('已保存')
+  }
+  saving.value = false
+  emit('saved', saved, !isEdit.value)
+  emit('update:show', false)
 }
 </script>
 
 <template>
-  <n-modal :show="show" transform-origin="center" @update:show="emit('update:show', $event)">
+  <n-modal
+    :show="show"
+    transform-origin="center"
+    :mask-closable="!autoGenerating"
+    :close-on-esc="!autoGenerating"
+    @update:show="emit('update:show', $event)"
+  >
     <div class="modal-card">
       <div class="mb-5">
         <h2 class="text-[16px] font-bold text-zinc-900">
           {{ isEdit ? '编辑题目' : '新增题目' }}
         </h2>
         <p class="mt-0.5 text-[12px] text-zinc-400">
-          真实面试遇到的题建议标低自评分，会自动进入错题本
+          {{
+            isEdit
+              ? '真实面试遇到的题建议标低自评分，会自动进入错题本'
+              : '点「添加」入库后会自动生成 AI 口述版答案（结合默认简历与 Obsidian 知识库）'
+          }}
         </p>
       </div>
 
       <n-form ref="formRef" :model="form" :rules="rules" label-placement="top" size="small" :show-require-mark="false">
-        <n-form-item label="题干" path="content">
+        <n-form-item path="content">
+          <template #label>
+            <div class="flex w-full items-center justify-between">
+              <span>题干</span>
+              <n-button
+                size="tiny"
+                type="primary"
+                secondary
+                :loading="polishing"
+                @click="polishContent"
+              >
+                <template #icon>
+                  <n-icon :component="SparklesOutline" :size="13" />
+                </template>
+                AI 润色
+              </n-button>
+            </div>
+          </template>
           <n-input
             v-model:value="form.content"
             type="textarea"
@@ -265,14 +371,29 @@ async function submit() {
 
         <div class="grid grid-cols-2 gap-x-4">
           <n-form-item label="考察维度" path="dimension">
-            <n-select
-              v-model:value="form.dimension"
-              filterable
-              tag
-              creatable
-              :options="dimensionOptions"
-              placeholder="选择或输入新维度"
-            />
+            <div class="flex w-full items-center gap-2">
+              <n-select
+                v-model:value="form.dimension"
+                filterable
+                tag
+                creatable
+                :options="dimensionOptions"
+                placeholder="选择或输入新维度"
+                class="flex-1"
+              />
+              <n-button
+                size="tiny"
+                type="primary"
+                secondary
+                :loading="dimPicking"
+                @click="pickDimension"
+              >
+                <template #icon>
+                  <n-icon :component="SparklesOutline" :size="13" />
+                </template>
+                AI 选择
+              </n-button>
+            </div>
           </n-form-item>
           <n-form-item label="关联简历（因哪版简历被问到）" path="resume_id">
             <n-select
@@ -294,7 +415,7 @@ async function submit() {
             <n-radio-group v-model:value="form.source">
               <n-radio-button value="manual">手动</n-radio-button>
               <n-radio-button value="real">真实面试</n-radio-button>
-              <n-radio-button value="predicted">AI 预测</n-radio-button>
+              <n-radio-button value="predicted">题目预测</n-radio-button>
             </n-radio-group>
           </n-form-item>
           <n-form-item label="掌握状态" path="mastery">
@@ -327,7 +448,7 @@ async function submit() {
             <template #icon>
               <n-icon :component="SparklesOutline" :size="13" />
             </template>
-            AI 生成口述版答案
+            生成 AI 答案
           </n-button>
         </div>
         <n-form-item label="口述版（面试现场怎么说）" path="answer_spoken">
@@ -335,7 +456,7 @@ async function submit() {
             v-model:value="form.answer_spoken"
             type="textarea"
             :rows="4"
-            placeholder="第一人称自然口语；点上方按钮由 AI 生成，可编辑"
+            placeholder="第一人称自然口语；新题保存后自动生成，也可点上方按钮生成"
           />
         </n-form-item>
         <n-form-item label="参考答案要点 / 得分点" path="answer_key">
@@ -349,9 +470,11 @@ async function submit() {
       </n-form>
 
       <div class="mt-2 flex justify-end gap-2.5">
-        <n-button quaternary @click="emit('update:show', false)">取消</n-button>
+        <n-button quaternary :disabled="autoGenerating" @click="emit('update:show', false)">
+          取消
+        </n-button>
         <n-button type="primary" class="!px-5" :loading="saving" @click="submit">
-          {{ isEdit ? '保存' : '添加' }}
+          {{ autoGenerating ? '正在生成 AI 答案…' : isEdit ? '保存' : '添加' }}
         </n-button>
       </div>
     </div>

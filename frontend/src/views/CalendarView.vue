@@ -177,7 +177,7 @@ function resultChipClass(result: string): string {
 <template>
   <div class="flex h-full flex-col">
     <!-- 页头 -->
-    <header class="fade-up flex flex-wrap items-end justify-between gap-4 px-7 pb-3 pt-6">
+    <header class="fade-up flex flex-wrap items-end justify-between gap-4 px-7 pb-3 pt-6 max-md:gap-2.5 max-md:px-4 max-md:pt-4">
       <div>
         <h1 class="text-[21px] font-bold tracking-tight text-zinc-900">面试日程</h1>
         <p class="mt-1 text-[13px] text-zinc-400">
@@ -199,17 +199,21 @@ function resultChipClass(result: string): string {
           </button>
         </div>
         <span class="min-w-[120px] text-[13.5px] font-semibold text-zinc-700">{{ periodTitle }}</span>
-        <button class="btn-gradient" @click="openCreate">
+        <button class="btn-gradient shrink-0 whitespace-nowrap" @click="openCreate">
           <n-icon :component="AddOutline" :size="16" />
           新增面试
         </button>
       </div>
     </header>
 
-    <!-- 主体：日历 + 当日面板 -->
-    <div class="fade-up-d1 flex min-h-0 flex-1 gap-4 px-7 pb-5">
+    <!-- 主体：日历 + 当日面板；移动端上下堆叠 -->
+    <div
+      class="fade-up-d1 flex min-h-0 flex-1 gap-4 px-7 pb-5 max-md:flex-col max-md:gap-3 max-md:overflow-y-auto max-md:px-4"
+    >
       <!-- 日历网格 -->
-      <div class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200/70 bg-white">
+      <div
+        class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200/70 bg-white max-md:min-h-[380px] max-md:shrink-0"
+      >
         <div class="grid border-b border-zinc-100 bg-zinc-50/60" :class="viewMode === 'month' ? 'grid-cols-7' : 'grid-cols-7'">
           <div
             v-for="(d, i) in WEEK_DAYS"
@@ -248,6 +252,7 @@ function resultChipClass(result: string): string {
                 :class="resultChipClass(ev.result)"
               >
                 <span class="shrink-0 font-medium">{{ hm(ev.scheduled_at!) }}</span>
+                <span class="shrink-0">{{ ROUND_LABEL[ev.round_type] ?? '面试' }}</span>
                 <span class="truncate">{{ ev.company }}</span>
               </span>
               <span
@@ -306,7 +311,9 @@ function resultChipClass(result: string): string {
       </div>
 
       <!-- 当日面板 -->
-      <aside class="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-2xl border border-zinc-200/70 bg-white">
+      <aside
+        class="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-2xl border border-zinc-200/70 bg-white max-md:w-full max-md:max-h-[320px]"
+      >
         <div class="border-b border-zinc-100 px-4 py-3.5">
           <div class="text-[14px] font-bold text-zinc-800">
             {{ Number(selectedDate.slice(5, 7)) }}月{{ Number(selectedDate.slice(8, 10)) }}日

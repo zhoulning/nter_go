@@ -16,8 +16,11 @@ from html import unescape
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.auth import get_current_user
 from app.database import get_session
-from app.routers.settings import get_ai_config, get_browser_config
+from app.kb import search_knowledge_base
+from app.models import User
+from app.routers.settings import get_ai_config, get_browser_config, get_kb_path
 
 router = APIRouter()
 
@@ -436,8 +439,11 @@ def _read_zhipin_tab(cdp_endpoint: str) -> dict:
     return {"title": title, "text": text, "url": target.url}
 
 
-def _extract_site_page(url: str, cdp_endpoint: str) -> dict:
-    """通过 CDP 直连用户已登录的浏览器，返回页面标题与正文文本（结构化交给 LLM）。"""
+def _extract_site_page(url: str, cdp_endpoint: str, require_jd: bool = True) -> dict:
+    """通过 CDP 直连用户已登录的浏览器，返回页面标题与正文文本（结构化交给 LLM）。
+
+    require_jd=False 时跳过「页面必须是职位详情」的校验（岗位情报等通用抓取场景使用）。
+    """
     _bypass_proxy_for_localhost()
 
     try:
@@ -484,20 +490,27 @@ def _extract_site_page(url: str, cdp_endpoint: str) -> dict:
                         title = ""
                     final_url = page.url
                     if final_url in ("about:blank", "") or not text.strip():
+                        site = "BOSS 直聘" if "zhipin.com" in url else "目标网站"
+                        hint = (
+                            "请先在专用浏览器里像真人一样打开一次 zhipin.com 或任意职位页"
+                            "（如弹出滑块请完成），几分钟后回到本应用重试"
+                            if "zhipin.com" in url
+                            else "请在专用浏览器里手动打开一次该站点（如弹出登录/滑块请完成）后重试"
+                        )
                         raise HTTPException(
                             status_code=422,
-                            detail=(
-                                "BOSS 拦截了这次访问（页面被置空），通常是短时间多次提取触发的临时状态："
-                                "请先在专用浏览器里像真人一样打开一次 zhipin.com 或任意职位页"
-                                "（如弹出滑块请完成），几分钟后回到本应用重试"
-                            ),
+                            detail=f"{site}拦截了这次访问（页面被置空）：{hint}",
                         )
                     if len(text) < 300 and "/web/user/" in final_url:
                         raise HTTPException(
                             status_code=422,
                             detail="该浏览器尚未登录 BOSS 直聘：请在弹出的专用浏览器中登录后重试（登录态长期有效）",
                         )
-                    if not _has_jd_marker(text) and not _is_job_detail_url(final_url):
+                    if (
+                        require_jd
+                        and not _has_jd_marker(text)
+                        and not _is_job_detail_url(final_url)
+                    ):
                         # 未登录时 BOSS 会把职位详情重定向到分类目录页
                         raise HTTPException(
                             status_code=422,
@@ -515,14 +528,22 @@ def _extract_site_page(url: str, cdp_endpoint: str) -> dict:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"浏览器提取失败：{type(e).__name__}: {str(e)[:150]}")
 
-    _validate_zhipin_page(title, text, allow_redirect_hint=True)
-    return {"title": title, "text": _trim_zhipin_text(text)}
+    if require_jd:
+        # 职位提取场景：校验页面确实是职位详情，并裁掉 BOSS 页面的噪音尾巴
+        _validate_zhipin_page(title, text, allow_redirect_hint=True)
+        return {"title": title, "text": _trim_zhipin_text(text)}
+    # 通用抓取（岗位情报等）：不做职位页校验与 BOSS 噪音裁剪
+    return {"title": title, "text": text}
 
 
 # ---------------------------------------------------------------- 路由
 
 @router.post("/ai/extract-job")
-def extract_job(body: ExtractRequest, session: Session = Depends(get_session)):
+def extract_job(
+    body: ExtractRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
     cfg = get_ai_config(session)
 
     # 被动模式：读取专用浏览器当前打开的 BOSS 职位页（推荐，零自动化特征）
@@ -597,52 +618,174 @@ def extract_job(body: ExtractRequest, session: Session = Depends(get_session)):
     raise HTTPException(status_code=400, detail="请提供职位链接或 JD 文本")
 
 
-# ---- 题目答案生成（口述版 + 简答版） ----
+# ---- 统一参考答案引擎 ----
+# 全站所有面试题答案（题库口述版 / 题目预测题单 / 复盘示范答案）的唯一生成路径：
+# 上下文固定为「关联或默认简历 + 目标岗位 JD + Obsidian 知识库检索」，
+# 格式统一为下方口述版标准。新增答案场景一律复用本引擎，禁止再另写答案 prompt。
+
+ANSWER_STANDARD = """1. 第一人称、自然口语，像面试现场说出来的话，不要书面腔；
+2. 先用一句话给出核心结论，再分 2-4 个要点展开，要点用「1. 2. 3.」编号，每个要点两三句话，结论句与每个编号要点独占一行；
+3. 关键词用 **加粗** 标出，方便复习时快速抓重点；
+4. 总长 250-400 字，不要寒暄、不要开场白和总结陈词。"""
+
+ANSWER_EXPERIENCE_RULES = """1. 只要题目与项目 / 实习 / 工作经历相关，必须以「我的简历」中的真实项目作答：项目背景、技术选型、量化数据都要与简历一致——面试官手里就是这份简历，答案不能与简历矛盾，更不能凭空捏造简历里没有的项目；
+2. 项目相关的回答按 STAR 原则展开（情境-任务-行动-结果），结果要有量化数字：简历里已有的直接用，没有的才可合理假设；
+3. 与项目无关的纯知识题直接讲透知识点，不要生硬套项目。"""
 
 
-class AnswerGenRequest(BaseModel):
-    question_id: Optional[int] = None  # 已入库题目：生成后直接落库
-    content: Optional[str] = None      # 未入库时直接给题干
-    dimension: Optional[str] = None
-    companies: list[str] = []
+def _load_answer_resume(session: Session, user: User, resume_id: Optional[int]):
+    """题目单独关联的简历优先，否则默认简历。"""
+    from app.models import Resume
+
+    resume = None
+    if resume_id is not None:
+        resume = session.get(Resume, resume_id)
+        if resume is not None and resume.user_id != user.id:
+            resume = None
+    if resume is None:
+        resume = session.exec(
+            select(Resume).where(
+                Resume.user_id == user.id,
+                Resume.is_default == True,  # noqa: E712
+            )
+        ).first()
+    return resume
 
 
-ANSWER_PROMPT = """你是资深后端面试教练。针对下面这道真实面试题，直接给出面试现场的口述版参考答案。
+def collect_answer_context(
+    session: Session,
+    user: User,
+    *,
+    resume_id: Optional[int] = None,
+    opportunity_id: Optional[int] = None,
+    kb_query: str = "",
+) -> dict:
+    """统一收集答案上下文：简历 + 岗位 JD + 知识库片段，所有答案场景共用。"""
+    from app.models import Opportunity
+
+    resume = _load_answer_resume(session, user, resume_id)
+    resume_text = ""
+    if resume is not None:
+        body_text = (resume.structured or resume.text or "").strip()
+        if body_text:
+            resume_text = f"《{resume.name}》\n{body_text[:3500]}"
+    if not resume_text:
+        resume_text = "（未设置默认简历）没有简历资料时，不要虚构具体项目细节，按通用最佳实践回答。"
+
+    jd_text = ""
+    if opportunity_id is not None:
+        opp = session.get(Opportunity, opportunity_id)
+        if opp is not None and opp.user_id == user.id:
+            jd_text = (opp.jd_text or "").strip()[:3000]
+    if not jd_text:
+        jd_text = "（未关联目标岗位，忽略本节）"
+
+    try:
+        kb_hits = search_knowledge_base(session, kb_query) if kb_query.strip() else []
+    except Exception:
+        kb_hits = []
+    if kb_hits:
+        kb_text = "\n".join(f"[{i}] 来源 {h['source']}\n{h['text']}" for i, h in enumerate(kb_hits, 1))
+        kb_text = kb_text[:2400]
+    else:
+        kb_text = "（未配置知识库或未检索到相关笔记，忽略本节）"
+    return {"resume_text": resume_text, "jd_text": jd_text, "kb_text": kb_text}
+
+
+def build_answer_prompt(*, content: str, dimension: str, companies: list[str], ctx: dict) -> str:
+    """唯一的答案 prompt：标准来自共享常量，上下文来自 collect_answer_context。"""
+    return f"""你是资深后端面试教练。针对下面这道真实面试题，直接给出面试现场的口述版参考答案。
 
 格式要求（严格遵守）：
-1. 第一人称、自然口语，像面试现场说出来的话，不要书面腔；
-2. 先用一句话给出核心结论，再分 2-4 个要点展开，要点用「1. 2. 3.」编号，每个要点两三句话；
-3. 关键词用 **加粗** 标出，方便复习时快速抓重点；
-4. 项目 / 场景类题目按 STAR 展开（情境-任务-行动-结果），结果带量化数字（可合理假设）；
-5. 总长 250-400 字，不要寒暄、不要开场白和总结陈词。
+{ANSWER_STANDARD}
+
+经历要求（严格遵守）：
+{ANSWER_EXPERIENCE_RULES}
+
+若下方提供了「知识库笔记」，优先采用其中与题目相关的要点、结论和细节，自然融入答案；与题目无关的笔记直接忽略，不要提及。
 
 只输出答案正文（Markdown 格式），不要 JSON 包装，不要任何解释或前后缀。
 
-考察维度：{dimension}
-被问到的公司：{companies}
-题目：{content}"""
+考察维度：{dimension or "未指定"}
+被问到的公司：{"、".join(companies) if companies else "未提供"}
+题目：{content[:2000]}
+
+目标岗位 JD（贴合岗位要求的技术栈与业务场景作答）：
+{ctx["jd_text"]}
+
+我的简历（项目经历以此为准）：
+{ctx["resume_text"]}
+
+知识库笔记（来自我的 Obsidian 知识库，按题目相关度检索）：
+{ctx["kb_text"]}"""
 
 
-@router.post("/ai/generate-answer")
-def generate_answer(body: AnswerGenRequest, session: Session = Depends(get_session)):
-    from app.models import Question, QuestionSource, Opportunity
-
+def generate_reference_answer(
+    session: Session,
+    user: User,
+    *,
+    content: str,
+    dimension: str = "",
+    companies: Optional[list[str]] = None,
+    opportunity_id: Optional[int] = None,
+    resume_id: Optional[int] = None,
+) -> str:
+    """生成一道面试题的口述版参考答案（全站唯一答案生成入口，线程安全：只用传入的 session）。"""
     cfg = get_ai_config(session)
     if not cfg["api_key"]:
         raise HTTPException(status_code=400, detail="尚未配置 AI API Key，请先到「设置」中填写")
+    content = (content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="题干为空，无法生成答案")
+    ctx = collect_answer_context(
+        session,
+        user,
+        resume_id=resume_id,
+        opportunity_id=opportunity_id,
+        kb_query=f"{content} {dimension}",
+    )
+    prompt = build_answer_prompt(
+        content=content, dimension=dimension, companies=companies or [], ctx=ctx
+    )
+    raw = _call_llm(cfg["base_url"], cfg["model"], cfg["api_key"], prompt)
+    answer = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", raw.strip()).strip()
+    if not answer:
+        raise HTTPException(status_code=502, detail="AI 没有生成有效答案，请重试")
+    return answer
+
+
+class AnswerGenRequest(BaseModel):
+    question_id: Optional[int] = None        # 已入库题目：生成后直接落库
+    content: Optional[str] = None            # 未入库时直接给题干
+    dimension: Optional[str] = None
+    companies: list[str] = []
+    opportunity_id: Optional[int] = None     # 目标岗位（注入 JD 上下文）；已入库题目可从来源自动推导
+    resume_id: Optional[int] = None          # 关联简历（注入简历上下文）；未入库题目直接指定
+
+
+@router.post("/ai/generate-answer")
+def generate_answer(
+    body: AnswerGenRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    from app.models import Opportunity, Question, QuestionSource
 
     question = None
+    opportunity_id = body.opportunity_id
     content = (body.content or "").strip()
-    dimension = (body.dimension or "其他").strip()
+    dimension = (body.dimension or "").strip()
     companies = [c for c in body.companies if c.strip()]
+    resume_id = body.resume_id
 
     if body.question_id is not None:
         question = session.get(Question, body.question_id)
-        if question is None:
+        if question is None or question.user_id != user.id:
             raise HTTPException(status_code=404, detail="题目不存在")
         content = question.content
         dimension = question.dimension
-        # 来源公司自动从关联里取
+        resume_id = question.resume_id
+        # 来源公司 / 岗位 JD 自动从关联里取
         src_opps = session.exec(
             select(QuestionSource.opportunity_id).where(
                 QuestionSource.question_id == question.id
@@ -651,21 +794,28 @@ def generate_answer(body: AnswerGenRequest, session: Session = Depends(get_sessi
         companies = []
         for oid in src_opps:
             opp = session.get(Opportunity, oid)
-            if opp:
+            if opp and opp.user_id == user.id:
                 companies.append(opp.company)
+                if opportunity_id is None:
+                    opportunity_id = opp.id
+
+    if opportunity_id is not None:
+        opp = session.get(Opportunity, opportunity_id)
+        if opp is None or opp.user_id != user.id:
+            opportunity_id = None
 
     if not content:
         raise HTTPException(status_code=400, detail="请先填写题干再生成答案")
 
-    prompt = (
-        ANSWER_PROMPT.replace("{dimension}", dimension or "未指定")
-        .replace("{companies}", "、".join(companies) if companies else "未提供")
-        .replace("{content}", content[:2000])
+    answer = generate_reference_answer(
+        session,
+        user,
+        content=content,
+        dimension=dimension,
+        companies=companies,
+        opportunity_id=opportunity_id,
+        resume_id=resume_id,
     )
-    raw = _call_llm(cfg["base_url"], cfg["model"], cfg["api_key"], prompt)
-    answer = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", raw.strip()).strip()
-    if not answer:
-        raise HTTPException(status_code=502, detail="AI 没有生成有效答案，请重试")
 
     if question is not None:
         question.answer_spoken = answer
@@ -674,3 +824,77 @@ def generate_answer(body: AnswerGenRequest, session: Session = Depends(get_sessi
         session.commit()
 
     return {"answer_spoken": answer, "saved": question is not None}
+
+
+# ---- 题目录入辅助：题干润色 + 考察维度选择 ----
+
+QUESTION_ASSIST_PROMPT = """你是面试题库整理助手。下面是一段面试官原话或随手记录的题目内容，可能口语化、有错别字或混入无关上下文。
+
+{task_desc}
+
+候选考察维度（只能从中选一个，不许自造）：
+{dimensions}
+
+只输出一个 JSON 对象，不要任何解释或前后缀：{json_shape}
+
+----- 题目内容开始 -----
+{content}
+----- 题目内容结束 -----"""
+
+POLISH_TASK_DESC = """请完成两件事：
+1. 把题目内容整理成一道清晰、简洁、完整的面试题题干：保留原意与考察点，去掉口语废词、错别字和与题目无关的铺垫，不要添加原内容没有的信息，长度不超过 120 字；
+2. 从候选考察维度中选出这道题最核心的一个维度。"""
+
+DIMENSION_TASK_DESC = "请从候选考察维度中选出这道题最核心的一个维度，不要改写题干。"
+
+
+class QuestionAssistRequest(BaseModel):
+    content: str
+    dimensions: list[str] = []
+    task: str = "polish"  # polish=润色题干并选维度；dimension=仅选维度
+
+
+@router.post("/ai/question-assist")
+def question_assist(
+    body: QuestionAssistRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """题目录入 AI 辅助：润色题干、按题目内容选出考察维度（维度强制落在候选列表内）。"""
+    from app.routers.questions import DIMENSION_PRESETS
+
+    cfg = get_ai_config(session)
+    if not cfg["api_key"]:
+        raise HTTPException(status_code=400, detail="尚未配置 AI API Key，请先到「设置」中填写")
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="题干为空，无法使用 AI 辅助")
+    dims = [d.strip() for d in body.dimensions if d.strip()] or list(DIMENSION_PRESETS)
+    dimension_only = body.task == "dimension"
+    prompt = (
+        QUESTION_ASSIST_PROMPT
+        .replace("{task_desc}", DIMENSION_TASK_DESC if dimension_only else POLISH_TASK_DESC)
+        .replace("{dimensions}", "、".join(dims))
+        .replace(
+            "{json_shape}",
+            '{"dimension": "维度"}'
+            if dimension_only
+            else '{"content": "整理后的题干", "dimension": "维度"}',
+        )
+        .replace("{content}", content[:2000])
+    )
+    raw = _call_llm(cfg["base_url"], cfg["model"], cfg["api_key"], prompt, max_tokens=2048)
+    try:
+        data = _parse_json_loose(raw)
+    except ValueError:
+        raise HTTPException(status_code=502, detail=f"AI 返回内容无法解析：{raw[:200]}")
+    dimension = str(data.get("dimension") or "").strip()
+    if dimension not in dims:
+        dimension = "其他" if "其他" in dims else (dims[0] if dims else "其他")
+    result: dict = {"dimension": dimension}
+    if not dimension_only:
+        polished = str(data.get("content") or "").strip()
+        if not polished:
+            raise HTTPException(status_code=502, detail="AI 没有返回有效题干，请重试")
+        result["content"] = polished
+    return result

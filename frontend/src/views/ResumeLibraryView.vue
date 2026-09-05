@@ -149,7 +149,7 @@ function confirmDelete(r: Resume) {
 <template>
   <div class="flex h-full flex-col">
     <!-- 页头 -->
-    <header class="fade-up flex flex-wrap items-end justify-between gap-4 px-7 pb-3 pt-6">
+    <header class="fade-up flex flex-wrap items-end justify-between gap-4 px-7 pb-3 pt-6 max-md:gap-2.5 max-md:px-4 max-md:pt-4">
       <div>
         <h1 class="text-[21px] font-bold tracking-tight text-zinc-900">简历管理</h1>
         <p class="mt-1 text-[13px] text-zinc-400">
@@ -162,7 +162,7 @@ function confirmDelete(r: Resume) {
         :before-upload="beforeUpload"
         :show-file-list="false"
       >
-        <button class="btn-gradient" :disabled="uploading">
+        <button class="btn-gradient shrink-0 whitespace-nowrap" :disabled="uploading">
           <n-icon :component="CloudUploadOutline" :size="16" />
           {{ uploading ? '上传中…' : '上传简历' }}
         </button>
@@ -170,7 +170,7 @@ function confirmDelete(r: Resume) {
     </header>
 
     <!-- 列表 -->
-    <div class="min-h-0 flex-1 overflow-y-auto px-7 pb-6">
+    <div class="min-h-0 flex-1 overflow-y-auto px-7 pb-6 max-md:px-4">
       <div v-if="loading" class="grid h-full place-items-center text-sm text-zinc-400">
         正在加载简历…
       </div>
@@ -187,7 +187,9 @@ function confirmDelete(r: Resume) {
         <article
           v-for="r in resumes"
           :key="r.id"
-          class="flex items-center gap-4 rounded-2xl border border-zinc-200/80 bg-white p-4 shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition-shadow hover:shadow-[0_8px_20px_-8px_rgba(16,24,40,0.15)]"
+          class="flex cursor-pointer items-center gap-4 rounded-2xl border border-zinc-200/80 bg-white p-4 shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition-shadow hover:border-indigo-200 hover:shadow-[0_8px_20px_-8px_rgba(16,24,40,0.15)] max-md:flex-wrap"
+          title="点击查看简历详情"
+          @click="openResumeDetail?.(r.id)"
         >
           <div
             class="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-[11px] font-bold uppercase tracking-wide"
@@ -196,7 +198,7 @@ function confirmDelete(r: Resume) {
             {{ r.ext.replace('.', '') }}
           </div>
           <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 max-md:flex-wrap">
               <h3 class="truncate text-[14px] font-semibold text-zinc-800">{{ r.name }}</h3>
               <span
                 v-if="r.is_default"
@@ -228,7 +230,10 @@ function confirmDelete(r: Resume) {
               <template v-if="r.note"> · {{ r.note }}</template>
             </div>
           </div>
-          <div class="flex shrink-0 items-center gap-1">
+          <div
+            class="flex shrink-0 items-center gap-1 max-md:w-full max-md:flex-wrap max-md:justify-end max-md:border-t max-md:border-zinc-100 max-md:pt-1.5"
+            @click.stop
+          >
             <n-button size="tiny" quaternary type="primary" @click="openResumeDetail?.(r.id)">
               查看
             </n-button>

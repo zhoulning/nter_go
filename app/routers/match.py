@@ -5,8 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.auth import get_current_user
 from app.database import get_session
-from app.models import MatchReport, Opportunity, Resume
+from app.models import MatchReport, Opportunity, Resume, User
 from app.routers.ai import _call_llm, _parse_json_loose
 from app.routers.settings import get_ai_config
 
@@ -64,9 +65,10 @@ class MatchGenerateRequest(BaseModel):
     resume_id: int | None = None  # 不传则用岗位已关联的简历
 
 
-def _get_opportunity(session: Session, opportunity_id: int) -> Opportunity:
+def _get_opportunity(session: Session, opportunity_id: int, user: User) -> Opportunity:
+    """取当前用户的岗位；不存在或越权一律 404。"""
     opp = session.get(Opportunity, opportunity_id)
-    if opp is None:
+    if opp is None or opp.user_id != user.id:
         raise HTTPException(status_code=404, detail="岗位不存在")
     return opp
 
@@ -93,8 +95,12 @@ def _report_dict(session: Session, row: MatchReport) -> dict:
 
 
 @router.get("/opportunities/{opportunity_id}/match-report")
-def get_match_report(opportunity_id: int, session: Session = Depends(get_session)):
-    _get_opportunity(session, opportunity_id)
+def get_match_report(
+    opportunity_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    _get_opportunity(session, opportunity_id, user)
     row = session.exec(
         select(MatchReport).where(MatchReport.opportunity_id == opportunity_id)
     ).first()
@@ -105,9 +111,10 @@ def get_match_report(opportunity_id: int, session: Session = Depends(get_session
 def generate_match_report(
     opportunity_id: int,
     body: MatchGenerateRequest,
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    opp = _get_opportunity(session, opportunity_id)
+    opp = _get_opportunity(session, opportunity_id, user)
     if not (opp.jd_text or "").strip():
         raise HTTPException(
             status_code=400,
@@ -120,7 +127,7 @@ def generate_match_report(
             status_code=400, detail="请先为该岗位关联一份简历（编辑弹窗或详情页中选择）"
         )
     resume = session.get(Resume, resume_id)
-    if resume is None:
+    if resume is None or resume.user_id != user.id:
         raise HTTPException(status_code=404, detail="关联的简历不存在，请重新选择")
     resume_text = resume.structured or resume.text
     if not resume_text:
@@ -185,7 +192,7 @@ def generate_match_report(
         select(MatchReport).where(MatchReport.opportunity_id == opportunity_id)
     ).first()
     if row is None:
-        row = MatchReport(opportunity_id=opportunity_id)
+        row = MatchReport(opportunity_id=opportunity_id, user_id=user.id)
     row.resume_id = resume_id
     row.model = cfg["model"]
     row.report = json.dumps(report_json, ensure_ascii=False)
@@ -197,7 +204,12 @@ def generate_match_report(
 
 
 @router.delete("/opportunities/{opportunity_id}/match-report")
-def delete_match_report(opportunity_id: int, session: Session = Depends(get_session)):
+def delete_match_report(
+    opportunity_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    _get_opportunity(session, opportunity_id, user)
     row = session.exec(
         select(MatchReport).where(MatchReport.opportunity_id == opportunity_id)
     ).first()

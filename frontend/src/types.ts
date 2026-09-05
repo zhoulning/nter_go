@@ -60,10 +60,19 @@ export const ROUND_LABEL: Record<string, string> = {
   first: '一面',
   second: '二面',
   third: '三面',
-  cross: '交叉面',
+  comprehensive: '综合面',
   hr: 'HR面',
   other: '面试',
 }
+
+/** 模拟面试专属专题（不是真实面试轮次，不会出现在轮次管理 / 日历中） */
+export const MOCK_TOPIC_LABEL: Record<string, string> = {
+  project: '项目经历面',
+  stress: '压力面',
+}
+
+/** 模拟面试场景下的轮次标签 = 真实轮次 + 专题 */
+export const MOCK_ROUND_LABEL: Record<string, string> = { ...ROUND_LABEL, ...MOCK_TOPIC_LABEL }
 
 export const CHANNELS = ['内推', 'BOSS直聘', '猎聘', '智联招聘', '官网', '脉脉', '其他']
 
@@ -115,7 +124,7 @@ export interface Question {
 
 export const DIMENSION_PRESETS = [
   '语言特性',
-  '并发编程',
+  'JUC',
   'JVM',
   'MySQL',
   'Redis',
@@ -146,7 +155,7 @@ export const DIFFICULTY_META: Record<string, { label: string; class: string }> =
 export const QUESTION_SOURCE_LABEL: Record<string, string> = {
   manual: '手动添加',
   real: '真实面试',
-  predicted: 'AI 预测',
+  predicted: '题目预测',
 }
 
 // ---- 简历库 ----
@@ -163,6 +172,7 @@ export interface Resume {
   score: number | null
   review_json: string | null
   questions_json: string | null
+  questions_direction: string | null
   is_default: boolean
   note: string | null
   created_at: string
@@ -178,6 +188,7 @@ export interface ResumePredictedQuestion {
   tag: string
   q: string
   a: string
+  full?: string  // 完整答案（口述版）；旧数据可能没有
 }
 
 export function parseResumeSuggestions(r: Resume | null): ResumeSuggestion[] {
@@ -187,6 +198,52 @@ export function parseResumeSuggestions(r: Resume | null): ResumeSuggestion[] {
   } catch {
     return []
   }
+}
+
+export interface ResumeDimensions {
+  completeness: number
+  quantification: number
+  credibility: number
+  concision: number
+  relevance: number
+}
+
+/** 体检报告的五维分（1-5）；五维齐全才返回，旧数据 / 解析失败返回 null */
+export function parseResumeDimensions(r: Resume | null): ResumeDimensions | null {
+  if (!r?.review_json) return null
+  try {
+    const d = JSON.parse(r.review_json)?.dimensions
+    if (!d || typeof d !== 'object') return null
+    const dims: ResumeDimensions = {
+      completeness: +d.completeness,
+      quantification: +d.quantification,
+      credibility: +d.credibility,
+      concision: +d.concision,
+      relevance: +d.relevance,
+    }
+    return Object.values(dims).every((v) => v >= 1 && v <= 5) ? dims : null
+  } catch {
+    return null
+  }
+}
+
+/** 体检总分推导用的五维权重（与后端 DIM_WEIGHTS 一致） */
+export const RESUME_DIM_WEIGHTS: Record<keyof ResumeDimensions, number> = {
+  completeness: 0.15,
+  quantification: 0.25,
+  credibility: 0.25,
+  concision: 0.15,
+  relevance: 0.2,
+}
+
+export function resumeBaseScore(dims: ResumeDimensions | null): number | null {
+  if (!dims) return null
+  return Math.round(
+    Object.entries(RESUME_DIM_WEIGHTS).reduce(
+      (sum, [key, w]) => sum + w * ((dims[key as keyof ResumeDimensions] - 1) / 4) * 100,
+      0,
+    ),
+  )
 }
 
 export function parseResumeQuestions(r: Resume | null): ResumePredictedQuestion[] {
@@ -259,6 +316,7 @@ export const NOTE_TYPE_META: { key: string; label: string; hint: string }[] = [
   { key: 'tech', label: '技术栈调研', hint: 'JD 技术关键词逐项复习' },
   { key: 'self_intro', label: '自我介绍稿', hint: '按这家公司定制的 1/3 分钟版' },
   { key: 'ask_back', label: '反问清单', hint: '体现做过功课的反问' },
+  { key: 'employee', label: '员工评价', hint: '加班、福利、氛围、薪资爆料' },
 ]
 
 export interface MatchItem {
@@ -335,6 +393,8 @@ export interface PredictedQuestion {
   q: string
   intent: string
   key_points: string
+  /** 完整参考答案（口述版，与题库 AI 答案同一标准）；旧题单可能没有该字段 */
+  answer?: string
   difficulty: 'easy' | 'medium' | 'hard'
 }
 
@@ -342,6 +402,8 @@ export interface PredictionReport {
   questions: PredictedQuestion[]
   weak_focus: string[]
   overall_advice: string
+  /** 部分题目答案生成失败时的提示（后端回填） */
+  answer_note?: string
 }
 
 export interface PredictionInfo {
@@ -374,7 +436,12 @@ export interface MockAnalysisQuestion {
   scores: { structure: number; depth: number; clarity: number } | null
   good: string[]
   bad: string[]
-  reference: string
+  /** 参考答题要点（逐条；旧数据为单字符串，渲染时兼容） */
+  reference: string | string[]
+  /** 完整口述版示范答案（Markdown，题库口述版标准） */
+  model_answer?: string
+  /** 候选人本题的原始回答原话（从对话记录按题回填；跳过题为固定话术） */
+  my_answer_full?: string
 }
 
 export interface MockAnalysis {
@@ -396,4 +463,41 @@ export interface MockInterviewInfo {
   overall_score: number
   created_at: string
   finished_at: string | null
+}
+
+/** 轻量 Markdown：编号要点 / 短横线要点 / **加粗**，用于答案的排版展示（内容已先做 HTML 转义，配合 v-html 使用） */
+export function renderMdLite(text: string): string {
+  const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const bold = (s: string) =>
+    s.replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-zinc-900">$1</strong>')
+  const numRow = (n: string, body: string) =>
+    `<div class="mb-2.5 flex gap-2 last:mb-0"><span class="shrink-0 font-bold text-indigo-500">${n}.</span><span>${bold(body)}</span></div>`
+  const bulletRow = (body: string) =>
+    `<div class="mb-2.5 flex gap-2 last:mb-0"><span class="mt-[9px] h-1 w-1 shrink-0 rounded-full bg-indigo-400"></span><span>${bold(body)}</span></div>`
+  // 「3.5 年」这类小数不是编号：编号点后不能紧跟数字
+  const NUM_RE = /^(\d{1,2})[.、)）](?!\d)\s*(.+)$/
+  const INLINE_SPLIT = /\s+(?=\d{1,2}[.、](?!\d)\s*\S)/
+  const tailRows = (parts: string[]) =>
+    parts.map((part) => {
+      const m = part.match(/^(\d{1,2})[.、](?!\d)\s*(.+)$/)
+      return m ? numRow(m[1], m[2]) : `<p class="mb-2.5 last:mb-0">${bold(part)}</p>`
+    })
+  return esc
+    .split('\n')
+    .flatMap((raw) => {
+      const t = raw.trim().replace(/^#{1,4}\s+/, '')
+      if (!t) return []
+      const num = t.match(NUM_RE)
+      if (num) {
+        const segs = num[2].split(INLINE_SPLIT)
+        return [numRow(num[1], segs[0]), ...tailRows(segs.slice(1))]
+      }
+      const bullet = t.match(/^[-*•]\s+(.+)$/)
+      if (bullet) {
+        const segs = bullet[1].split(INLINE_SPLIT)
+        return [bulletRow(segs[0]), ...tailRows(segs.slice(1))]
+      }
+      return tailRows(t.split(INLINE_SPLIT))
+    })
+    .join('')
 }

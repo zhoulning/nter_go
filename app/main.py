@@ -11,14 +11,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
-from sqlmodel import Session
+from sqlmodel import Session, select
 
+from app.auth import hash_password
 from app.database import BASE_DIR, engine, init_db
+from app.models import ROLE_ADMIN, USER_ACTIVE, User
 from app.routers import (
     ai,
+    audit,
+    auth,
     calendar,
     match,
     mock_interviews,
+    notifications,
     offers,
     recordings,
     opportunities,
@@ -28,11 +33,29 @@ from app.routers import (
     resumes,
     settings,
     stats,
+    users,
 )
 from app.routers.questions import backfill_question_sources
 from app.seed import seed_if_empty, seed_offers_if_empty
 
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
+
+# 业务表清单：多用户改造时需要补 user_id 列并回填
+_OWNED_TABLES = (
+    "opportunity",
+    "interviewround",
+    "question",
+    "questionsource",
+    "resume",
+    "offer",
+    "recording",
+    "reviewreport",
+    "researchnote",
+    "matchreport",
+    "researchmaterial",
+    "prediction",
+    "mockinterview",
+)
 
 
 def _migrate() -> None:
@@ -109,9 +132,48 @@ def _migrate() -> None:
         # v1.15：求职者补充背景（AI 体检与出题的重要依据）
         if "background" not in resume_cols:
             conn.execute(text("ALTER TABLE resume ADD COLUMN background TEXT"))
+        # v2.1：预测面试题的出题方向（最近一次生成时指定）
+        if "questions_direction" not in resume_cols:
+            conn.execute(text("ALTER TABLE resume ADD COLUMN questions_direction TEXT"))
         # v1.8：工作地址（详细地址）
         if "address" not in cols:
             conn.execute(text("ALTER TABLE opportunity ADD COLUMN address TEXT"))
+        # v2.0：多用户 —— 业务表补 user_id 列（回填在 lifespan 里拿到 admin id 后做）
+        for table in _OWNED_TABLES:
+            tcols = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            if "user_id" not in tcols:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER"))
+
+
+def _ensure_admin(session: Session) -> User:
+    """保证存在超级管理员；全新系统自动创建 admin / admin123。"""
+    admin = session.exec(select(User).where(User.role == ROLE_ADMIN)).first()
+    if admin is not None:
+        return admin
+    admin = User(
+        username="admin",
+        password_hash=hash_password("admin123"),
+        display_name="管理员",
+        role=ROLE_ADMIN,
+        status=USER_ACTIVE,
+    )
+    session.add(admin)
+    session.commit()
+    session.refresh(admin)
+    print("[init] 已创建超级管理员账号：admin / admin123（请登录后在设置中修改密码）")
+    return admin
+
+
+def _backfill_user_ids(session: Session, admin_id: int) -> None:
+    """存量数据全部归属超级管理员 admin。"""
+    from sqlalchemy import text as _text
+
+    with engine.begin() as conn:
+        for table in _OWNED_TABLES:
+            conn.execute(
+                _text(f"UPDATE {table} SET user_id = :uid WHERE user_id IS NULL"),
+                {"uid": admin_id},
+            )
 
 
 @asynccontextmanager
@@ -119,21 +181,28 @@ async def lifespan(_app: FastAPI):
     init_db()
     _migrate()
     with Session(engine) as session:
-        seed_if_empty(session)
+        admin = _ensure_admin(session)
+        _backfill_user_ids(session, admin.id)
+        seed_if_empty(session, admin.id)
         seed_offers_if_empty(session)
         backfill_question_sources(session)
     yield
 
 
-app = FastAPI(title="进击の面试 API", version="0.1.1", lifespan=lifespan)
+app = FastAPI(title="进击の面试 API", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
+app.include_router(auth.router, prefix="/api")
+app.include_router(users.router, prefix="/api")
+app.include_router(audit.router, prefix="/api")
+app.include_router(notifications.router, prefix="/api")
 app.include_router(opportunities.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(ai.router, prefix="/api")

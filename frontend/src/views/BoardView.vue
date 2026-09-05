@@ -451,7 +451,7 @@ const rowProps = (row: Opportunity) => ({
 <template>
   <div class="flex h-full flex-col">
     <!-- 页头 -->
-    <header class="fade-up flex flex-wrap items-end justify-between gap-4 px-7 pb-3 pt-6">
+    <header class="fade-up flex flex-wrap items-end justify-between gap-4 px-7 pb-3 pt-6 max-md:gap-2.5 max-md:px-4 max-md:pt-4">
       <div>
         <h1 class="text-[21px] font-bold tracking-tight text-zinc-900">岗位跟踪</h1>
         <p class="mt-1 text-[13px] text-zinc-400">
@@ -470,13 +470,13 @@ const rowProps = (row: Opportunity) => ({
           clearable
           placeholder="搜索公司 / 岗位 / 城市"
           size="small"
-          style="width: 200px"
+          class="!w-[200px] max-md:!w-full max-md:!flex-1"
         >
           <template #prefix>
             <n-icon :component="SearchOutline" :size="15" class="text-zinc-400" />
           </template>
         </n-input>
-        <button class="btn-gradient" @click="openCreate">
+        <button class="btn-gradient shrink-0 whitespace-nowrap max-md:ml-3" @click="openCreate">
           <n-icon :component="AddOutline" :size="16" />
           新增岗位
         </button>
@@ -484,7 +484,7 @@ const rowProps = (row: Opportunity) => ({
     </header>
 
     <!-- 视图切换 + 多筛选 -->
-    <div class="flex flex-wrap items-center justify-between gap-3 px-7 pb-3">
+    <div class="flex flex-wrap items-center justify-between gap-3 px-7 pb-3 max-md:px-4">
       <div class="seg">
         <button :class="view === 'board' && 'active'" @click="setView('board')">
           <n-icon :component="GridOutline" :size="14" /> 看板
@@ -548,7 +548,7 @@ const rowProps = (row: Opportunity) => ({
     </div>
 
     <!-- 看板视图 -->
-    <div v-show="view === 'board'" class="min-h-0 flex-1 overflow-x-auto px-7 pb-4">
+    <div v-show="view === 'board'" class="min-h-0 flex-1 overflow-x-auto px-7 pb-4 max-md:px-4">
       <div v-if="loading" class="grid h-full place-items-center">
         <span class="text-sm text-zinc-400">正在加载看板…</span>
       </div>
@@ -597,7 +597,7 @@ const rowProps = (row: Opportunity) => ({
     </div>
 
     <!-- 列表视图 -->
-    <div v-show="view === 'list' && !loading" class="fade-up-d1 min-h-0 flex-1 px-7 pb-4">
+    <div v-show="view === 'list' && !loading" class="fade-up-d1 min-h-0 flex-1 px-7 pb-4 max-md:px-4">
       <div class="h-full overflow-auto rounded-2xl border border-zinc-200/70 bg-white p-2">
         <n-data-table
           :columns="tableColumns"

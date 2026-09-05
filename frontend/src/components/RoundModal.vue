@@ -67,7 +67,7 @@ watch(
 )
 
 const rules = {
-  opportunity_id: { required: true, message: '请选择关联岗位', trigger: 'change' },
+  opportunity_id: { required: true, type: 'number', message: '请选择关联岗位', trigger: 'change' },
   scheduled_at: {
     validator: () => form.scheduled_at != null,
     message: '请选择面试时间',

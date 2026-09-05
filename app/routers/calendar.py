@@ -3,10 +3,10 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from sqlmodel import Session, col, select
 
+from app.auth import get_current_user
 from app.database import get_session
 from app.models import (
     ROUND_FAILED,
@@ -16,6 +16,7 @@ from app.models import (
     ROUND_TYPES,
     InterviewRound,
     Opportunity,
+    User,
 )
 
 router = APIRouter()
@@ -51,11 +52,22 @@ def _event_dict(r: InterviewRound, opp: Opportunity) -> dict:
     }
 
 
+def _get_round_owned(session: Session, round_id: int, user: User) -> InterviewRound:
+    """取当前用户的轮次；越权或不存在一律 404。"""
+    r = session.get(InterviewRound, round_id)
+    if r is None or r.user_id != user.id:
+        raise HTTPException(status_code=404, detail="轮次不存在")
+    return r
+
+
 @router.get("/calendar/events")
 def calendar_events(
-    start: str, end: str, session: Session = Depends(get_session)
+    start: str,
+    end: str,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
 ):
-    """返回 [start, end] 区间内已排期的轮次事件。参数为 ISO 日期或日期时间。"""
+    """返回当前用户 [start, end] 区间内已排期的轮次事件。参数为 ISO 日期或日期时间。"""
     try:
         start_dt = datetime.fromisoformat(start)
         end_dt = datetime.fromisoformat(end)
@@ -67,20 +79,28 @@ def calendar_events(
     rounds = session.exec(
         select(InterviewRound)
         .where(
+            InterviewRound.user_id == user.id,
             col(InterviewRound.scheduled_at) >= start_dt,
             col(InterviewRound.scheduled_at) <= end_dt,
         )
         .order_by(col(InterviewRound.scheduled_at))
     ).all()
-    opps = {o.id: o for o in session.exec(select(Opportunity)).all()}
+    opps = {
+        o.id: o
+        for o in session.exec(select(Opportunity).where(Opportunity.user_id == user.id)).all()
+    }
     events = [_event_dict(r, opps[r.opportunity_id]) for r in rounds if r.opportunity_id in opps]
     return {"events": events, "total": len(events)}
 
 
 @router.post("/rounds")
-def create_round(body: RoundCreate, session: Session = Depends(get_session)):
+def create_round(
+    body: RoundCreate,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
     opp = session.get(Opportunity, body.opportunity_id)
-    if opp is None:
+    if opp is None or opp.user_id != user.id:
         raise HTTPException(status_code=404, detail="岗位不存在")
     if body.round_type not in ROUND_TYPES:
         raise HTTPException(status_code=400, detail="非法轮次类型")
@@ -94,6 +114,7 @@ def create_round(body: RoundCreate, session: Session = Depends(get_session)):
         actual_at=datetime.now() if body.result in (ROUND_PASSED, ROUND_FAILED, ROUND_NO_SHOW) else None,
         result=body.result,
         note=body.note,
+        user_id=user.id,
     )
     session.add(r)
     session.commit()
@@ -103,11 +124,12 @@ def create_round(body: RoundCreate, session: Session = Depends(get_session)):
 
 @router.patch("/rounds/{round_id}")
 def update_round(
-    round_id: int, body: RoundUpdate, session: Session = Depends(get_session)
+    round_id: int,
+    body: RoundUpdate,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
 ):
-    r = session.get(InterviewRound, round_id)
-    if r is None:
-        raise HTTPException(status_code=404, detail="轮次不存在")
+    r = _get_round_owned(session, round_id, user)
     changed = body.model_dump(exclude_unset=True)
     if "round_type" in changed and changed["round_type"] not in ROUND_TYPES:
         raise HTTPException(status_code=400, detail="非法轮次类型")
@@ -124,10 +146,12 @@ def update_round(
 
 
 @router.delete("/rounds/{round_id}")
-def delete_round(round_id: int, session: Session = Depends(get_session)):
-    r = session.get(InterviewRound, round_id)
-    if r is None:
-        raise HTTPException(status_code=404, detail="轮次不存在")
+def delete_round(
+    round_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    r = _get_round_owned(session, round_id, user)
     session.delete(r)
     session.commit()
     return {"ok": True}

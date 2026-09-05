@@ -82,8 +82,8 @@ SEED_OPPORTUNITIES = [
 ]
 
 
-def seed_if_empty(session: Session) -> bool:
-    """数据库为空时写入种子数据；返回是否执行了写入。"""
+def seed_if_empty(session: Session, owner_id: int) -> bool:
+    """数据库为空时写入种子数据（归属指定用户，即 admin）；返回是否执行了写入。"""
     if session.exec(select(Opportunity)).first() is not None:
         return False
 
@@ -108,6 +108,7 @@ def seed_if_empty(session: Session) -> bool:
             applied_at=applied_at,
             created_at=changed_at - timedelta(days=2),
             updated_at=changed_at,
+            user_id=owner_id,
         )
         session.add(opp)
         session.flush()  # 拿到 opp.id
@@ -120,6 +121,7 @@ def seed_if_empty(session: Session) -> bool:
                     actual_at=None if result == "pending" else scheduled_at,
                     result=result,
                     note=note,
+                    user_id=owner_id,
                 )
             )
     session.commit()
@@ -167,7 +169,7 @@ def seed_offers_if_empty(session: Session) -> bool:
         opp = by_company.get(company)
         if opp is None or opp.status not in (STATUS_OFFER, STATUS_ACCEPTED):
             continue
-        session.add(Offer(opportunity_id=opp.id, **payload))
+        session.add(Offer(opportunity_id=opp.id, user_id=opp.user_id, **payload))
         added = True
     if added:
         session.commit()

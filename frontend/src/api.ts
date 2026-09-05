@@ -9,6 +9,7 @@ import type {
   Resume,
   RoundEvent,
 } from './types'
+import { clearAuthUser } from './composables/useAuth'
 
 const BASE = '/api'
 
@@ -17,6 +18,10 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   })
+  if (res.status === 401 && !path.startsWith('/auth/')) {
+    // 会话失效：清掉本地登录态，前端自动切回登录页
+    clearAuthUser()
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error((body as { detail?: string }).detail ?? `请求失败 (${res.status})`)
@@ -26,6 +31,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 async function upload<T>(path: string, form: FormData): Promise<T> {
   const res = await fetch(BASE + path, { method: 'POST', body: form })
+  if (res.status === 401 && !path.startsWith('/auth/')) {
+    clearAuthUser()
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error((body as { detail?: string }).detail ?? `上传失败 (${res.status})`)
@@ -56,6 +64,75 @@ export interface AiSettingsInfo {
   api_key_masked: string | null
 }
 
+export interface AuthUser {
+  id: number
+  username: string
+  display_name: string | null
+  role: 'admin' | 'user'
+  status: string
+  avatar_url: string | null
+  created_at: string | null
+}
+
+export interface ManagedUser {
+  id: number
+  username: string
+  display_name: string | null
+  role: 'admin' | 'user'
+  status: 'active' | 'pending' | 'rejected' | 'disabled'
+  reject_reason: string | null
+  has_avatar: boolean
+  created_at: string | null
+  approved_at: string | null
+  last_login_at: string | null
+}
+
+export interface NotificationItem {
+  id: number
+  type: string
+  title: string
+  body: string | null
+  read: boolean
+  created_at: string | null
+}
+
+export interface AuditLogItem {
+  id: number
+  user_id: number | null
+  username: string
+  action: string
+  target: string | null
+  detail: string | null
+  ip: string | null
+  created_at: string | null
+}
+
+export interface AuditLogPage {
+  items: AuditLogItem[]
+  total: number
+  usernames: string[]
+}
+
+export interface InterviewReminder {
+  round_id: number
+  opportunity_id: number
+  company: string
+  position: string
+  round_type: string
+  scheduled_at: string
+  day_label: string
+  time_text: string
+  note: string | null
+  is_past: boolean
+  pending: boolean
+}
+
+export interface NotificationSummary {
+  unread_count: number
+  items: NotificationItem[]
+  interview_reminders: InterviewReminder[]
+}
+
 export interface AiSettingsUpdate {
   base_url?: string
   model?: string
@@ -64,6 +141,12 @@ export interface AiSettingsUpdate {
 
 export interface BrowserSettingsInfo {
   cdp_endpoint: string
+}
+
+export interface KnowledgeBaseInfo {
+  path: string
+  exists: boolean
+  file_count: number
 }
 
 export interface ExtractedJobFields {
@@ -80,6 +163,34 @@ export interface ExtractedJobFields {
 export interface QuestionSourceIn {
   opportunity_id: number
   round_id: number | null
+}
+
+export interface MockAnswerOrigin {
+  mock_interview_id: number
+  company: string | null
+  position: string | null
+  round_type: string
+  created_at: string | null
+  overall_score: number
+  question: string
+  my_answer: string | null
+}
+
+export interface RecordingAnswerOrigin {
+  recording_id: number
+  company: string | null
+  round_type: string | null
+  created_at: string | null
+  question_text: string
+  timestamp: string | null
+  context_before: string | null
+  my_answer: string | null
+  excerpt: string | null
+}
+
+export interface QuestionOrigins {
+  mock_answers: MockAnswerOrigin[]
+  recording_answers: RecordingAnswerOrigin[]
 }
 
 export interface QuestionPayload {
@@ -235,7 +346,68 @@ export interface StatsOverview {
   by_status: Record<string, number>
   channels: { channel: string; total: number; interviewed: number; offers: number }[]
   weekly: { week: string; applied: number; interviews: number }[]
+  rounds: {
+    round_type: string
+    total: number
+    passed: number
+    failed: number
+    no_show: number
+    pass_rate: number | null
+  }[]
+  cycles: {
+    apply_to_interview_days: number | null
+    apply_to_offer_days: number | null
+    response_rate: number | null
+    responded: number
+    no_response: number
+    waiting: number
+  }
+  review_trend: { date: string; score: number; company: string | null }[]
   generated_at: string
+}
+
+export interface DashboardUpcoming {
+  round_id: number
+  opportunity_id: number
+  company: string
+  position: string
+  round_type: string
+  scheduled_at: string
+}
+
+export interface DashboardData {
+  generated_at: string
+  cards: {
+    active_opportunities: number
+    upcoming_interviews: number
+    applied_week: number
+    offers: number
+    questions_total: number
+    questions_todo: number
+    resumes: number
+    resume_best_score: number | null
+    recordings: number
+    recordings_todo: number
+    review_avg_score: number | null
+    interviews_done: number
+    interview_pass_rate: number | null
+  }
+  upcoming: DashboardUpcoming[]
+  todos: {
+    round_results: { opportunity_id: number; company: string; round_type: string; scheduled_at: string }[]
+    round_results_total: number
+    overdue_wishlist: { opportunity_id: number; company: string; position: string; days: number }[]
+    overdue_total: number
+    missing_jd: { opportunity_id: number; company: string; position: string }[]
+    missing_jd_total: number
+    questions_todo: number
+    recordings_review: { id: number; company: string | null; title: string; created_at: string }[]
+    recordings_total: number
+    resumes_no_review: { id: number; name: string }[]
+    resumes_total: number
+  }
+  activity: { ts: string; kind: string; text: string; opportunity_id: number | null }[]
+  funnel: { key: string; label: string; count: number }[]
 }
 
 export const api = {
@@ -263,6 +435,14 @@ export const api = {
 
   saveBrowserSettings: (payload: { cdp_endpoint: string }) =>
     request<BrowserSettingsInfo>('/settings/browser', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  getKbSettings: () => request<KnowledgeBaseInfo>('/settings/kb'),
+
+  saveKbSettings: (payload: { path: string }) =>
+    request<KnowledgeBaseInfo>('/settings/kb', {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
@@ -310,6 +490,9 @@ export const api = {
   deleteQuestion: (id: number) =>
     request<{ ok: boolean }>(`/questions/${id}`, { method: 'DELETE' }),
 
+  questionOrigins: (id: number) =>
+    request<QuestionOrigins>(`/questions/${id}/origins`),
+
   // ---- 简历库 ----
 
   listResumes: () => request<{ items: Resume[]; total: number }>('/resumes'),
@@ -341,8 +524,11 @@ export const api = {
   reviewResume: (id: number) =>
     request<Resume>(`/resumes/${id}/review`, { method: 'POST' }),
 
-  predictResumeQuestions: (id: number) =>
-    request<Resume>(`/resumes/${id}/predict-questions`, { method: 'POST' }),
+  predictResumeQuestions: (id: number, direction?: string) =>
+    request<Resume>(`/resumes/${id}/predict-questions`, {
+      method: 'POST',
+      body: JSON.stringify({ direction: direction?.trim() || null }),
+    }),
 
   resumeFileUrl: (id: number) => `${BASE}/resumes/${id}/file`,
 
@@ -366,8 +552,18 @@ export const api = {
     content?: string
     dimension?: string
     companies?: string[]
+    opportunity_id?: number
+    resume_id?: number
   }) =>
     request<{ answer_spoken: string | null; saved: boolean }>('/ai/generate-answer', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  // ---- 题目录入 AI 辅助（润色题干 / 选考察维度） ----
+
+  questionAssist: (payload: { content: string; dimensions: string[]; task?: 'polish' | 'dimension' }) =>
+    request<{ content?: string; dimension: string }>('/ai/question-assist', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -375,6 +571,8 @@ export const api = {
   // ---- 统计 ----
 
   statsOverview: () => request<StatsOverview>('/stats/overview'),
+
+  statsDashboard: () => request<DashboardData>('/stats/dashboard'),
 
   // ---- 录音复盘 ----
 
@@ -466,6 +664,13 @@ export const api = {
       method: 'DELETE',
     }),
 
+  autoResearch: (opportunityId: number) =>
+    request<{
+      saved: ResearchMaterial[]
+      failed: { source: string; error: string }[]
+      duplicates: string[]
+    }>(`/opportunities/${opportunityId}/notes/auto-research`, { method: 'POST' }),
+
   generateOutline: (opportunityId: number, noteType: string, overwrite: boolean) =>
     request<ResearchNote>(`/opportunities/${opportunityId}/notes/${noteType}/outline`, {
       method: 'POST',
@@ -527,4 +732,91 @@ export const api = {
 
   deleteMockInterview: (interviewId: number) =>
     request<{ ok: boolean }>(`/mock-interviews/${interviewId}`, { method: 'DELETE' }),
+
+  // ---- 认证 / 用户 ----
+
+  registerStatus: () => request<{ enabled: boolean }>('/auth/register-status'),
+
+  updateProfile: (payload: { display_name?: string }) =>
+    request<AuthUser>('/auth/me', { method: 'PUT', body: JSON.stringify(payload) }),
+
+  updatePassword: (payload: { old_password: string; new_password: string }) =>
+    request<{ ok: boolean }>('/auth/me/password', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  uploadAvatar: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return upload<AuthUser>('/auth/me/avatar', fd)
+  },
+
+  deleteAvatar: () => request<AuthUser>('/auth/me/avatar', { method: 'DELETE' }),
+
+  listUsers: () => request<ManagedUser[]>('/users'),
+
+  createUser: (payload: { username: string; password: string; display_name?: string; role?: string }) =>
+    request<ManagedUser>('/users', { method: 'POST', body: JSON.stringify(payload) }),
+
+  approveUser: (id: number) =>
+    request<ManagedUser>(`/users/${id}/approve`, { method: 'POST' }),
+
+  rejectUser: (id: number, reason: string) =>
+    request<ManagedUser>(`/users/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+
+  disableUser: (id: number) =>
+    request<ManagedUser>(`/users/${id}/disable`, { method: 'POST' }),
+
+  enableUser: (id: number) =>
+    request<ManagedUser>(`/users/${id}/enable`, { method: 'POST' }),
+
+  resetUserPassword: (id: number, newPassword: string) =>
+    request<{ ok: boolean }>(`/users/${id}/password`, {
+      method: 'POST',
+      body: JSON.stringify({ new_password: newPassword }),
+    }),
+
+  deleteUser: (id: number) =>
+    request<{ ok: boolean }>(`/users/${id}`, { method: 'DELETE' }),
+
+  userAvatarUrl: (id: number) => `${BASE}/users/${id}/avatar`,
+
+  // ---- 操作日志（仅管理员） ----
+
+  listAuditLogs: (params: { category?: string; username?: string; limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (params.category) q.set('category', params.category)
+    if (params.username) q.set('username', params.username)
+    q.set('limit', String(params.limit ?? 50))
+    q.set('offset', String(params.offset ?? 0))
+    return request<AuditLogPage>(`/audit-logs?${q.toString()}`)
+  },
+
+  // ---- 系统设置（注册开关） ----
+
+  getRegistrationSettings: () =>
+    request<{ enabled: boolean }>('/settings/registration'),
+
+  saveRegistrationSettings: (enabled: boolean) =>
+    request<{ enabled: boolean }>('/settings/registration', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+
+  // ---- 通知 ----
+
+  notificationSummary: () => request<NotificationSummary>('/notifications/summary'),
+
+  markNotificationsRead: (ids?: number[]) =>
+    request<{ updated: number }>('/notifications/read', {
+      method: 'POST',
+      body: JSON.stringify({ ids: ids ?? null }),
+    }),
+
+  deleteNotification: (id: number) =>
+    request<{ ok: boolean }>(`/notifications/${id}`, { method: 'DELETE' }),
 }

@@ -7,6 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from sqlmodel import Session, col, select
 
+from app.auth import get_current_user
 from app.database import get_session
 from app.models import (
     ACTIVE_STATUSES,
@@ -17,6 +18,7 @@ from app.models import (
     Opportunity,
     Resume,
     ROUND_PENDING,
+    User,
 )
 
 router = APIRouter()
@@ -54,9 +56,9 @@ class OpportunityUpdate(BaseModel):
     note: Optional[str] = None
 
 
-def _get_opportunity(session: Session, opportunity_id: int) -> Opportunity:
+def _get_opportunity(session: Session, opportunity_id: int, user: User) -> Opportunity:
     opp = session.get(Opportunity, opportunity_id)
-    if opp is None:
+    if opp is None or opp.user_id != user.id:
         raise HTTPException(status_code=404, detail="岗位不存在")
     return opp
 
@@ -105,17 +107,26 @@ def _opp_dict(
 
 
 @router.get("/opportunities")
-def list_opportunities(session: Session = Depends(get_session)):
-    """返回全部未归档岗位，附带轮次与下一场面试。"""
+def list_opportunities(
+    user: User = Depends(get_current_user), session: Session = Depends(get_session)
+):
+    """返回当前用户的全部未归档岗位，附带轮次与下一场面试。"""
     now = datetime.now()
     opportunities = session.exec(
-        select(Opportunity).where(col(Opportunity.status).notin_(ARCHIVED_STATUSES))
+        select(Opportunity).where(
+            Opportunity.user_id == user.id,
+            col(Opportunity.status).notin_(ARCHIVED_STATUSES),
+        )
     ).all()
-    rounds = session.exec(select(InterviewRound).order_by(col(InterviewRound.scheduled_at))).all()
+    rounds = session.exec(
+        select(InterviewRound)
+        .where(InterviewRound.user_id == user.id)
+        .order_by(col(InterviewRound.scheduled_at))
+    ).all()
     rounds_by_opp: dict[int, list[InterviewRound]] = {}
     for r in rounds:
         rounds_by_opp.setdefault(r.opportunity_id, []).append(r)
-    resumes = {r.id: r for r in session.exec(select(Resume)).all()}
+    resumes = {r.id: r for r in session.exec(select(Resume).where(Resume.user_id == user.id)).all()}
 
     return {
         "items": [
@@ -132,16 +143,21 @@ def list_opportunities(session: Session = Depends(get_session)):
 
 
 @router.post("/opportunities")
-def create_opportunity(body: OpportunityCreate, session: Session = Depends(get_session)):
+def create_opportunity(
+    body: OpportunityCreate,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
     if body.status not in ACTIVE_STATUSES:
         raise HTTPException(status_code=400, detail="非法状态")
     data = body.model_dump()
     if data["status"] == STATUS_APPLIED and data.get("applied_at") is None:
         data["applied_at"] = datetime.now()  # 记录投递时间
     resume = session.get(Resume, data["resume_id"]) if data.get("resume_id") else None
-    if data.get("resume_id") and resume is None:
-        raise HTTPException(status_code=400, detail="关联的简历不存在")
-    opp = Opportunity(**data)
+    if data.get("resume_id"):
+        if resume is None or resume.user_id != user.id:
+            raise HTTPException(status_code=400, detail="关联的简历不存在")
+    opp = Opportunity(**data, user_id=user.id)
     session.add(opp)
     session.commit()
     session.refresh(opp)
@@ -150,9 +166,12 @@ def create_opportunity(body: OpportunityCreate, session: Session = Depends(get_s
 
 @router.patch("/opportunities/{opportunity_id}")
 def update_opportunity(
-    opportunity_id: int, body: OpportunityUpdate, session: Session = Depends(get_session)
+    opportunity_id: int,
+    body: OpportunityUpdate,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
 ):
-    opp = _get_opportunity(session, opportunity_id)
+    opp = _get_opportunity(session, opportunity_id, user)
     # 只更新请求里出现的字段；显式传 null 表示清空该字段
     changed = body.model_dump(exclude_unset=True)
     if not changed:
@@ -170,7 +189,8 @@ def update_opportunity(
         if changed["status"] == STATUS_APPLIED and opp.applied_at is None and "applied_at" not in changed:
             opp.applied_at = datetime.now()
     if "resume_id" in changed and changed["resume_id"] is not None:
-        if session.get(Resume, changed["resume_id"]) is None:
+        resume = session.get(Resume, changed["resume_id"])
+        if resume is None or resume.user_id != user.id:
             raise HTTPException(status_code=400, detail="关联的简历不存在")
 
     opp.updated_at = datetime.now()
@@ -188,8 +208,12 @@ def update_opportunity(
 
 
 @router.delete("/opportunities/{opportunity_id}")
-def delete_opportunity(opportunity_id: int, session: Session = Depends(get_session)):
-    opp = _get_opportunity(session, opportunity_id)
+def delete_opportunity(
+    opportunity_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    opp = _get_opportunity(session, opportunity_id, user)
     rounds = session.exec(
         select(InterviewRound).where(col(InterviewRound.opportunity_id) == opp.id)
     ).all()
@@ -201,10 +225,14 @@ def delete_opportunity(opportunity_id: int, session: Session = Depends(get_sessi
 
 
 @router.get("/stats")
-def stats(session: Session = Depends(get_session)):
-    """首页/看板顶部用的汇总统计。"""
+def stats(
+    user: User = Depends(get_current_user), session: Session = Depends(get_session)
+):
+    """首页/看板顶部用的汇总统计（当前用户）。"""
     now = datetime.now()
-    opportunities = session.exec(select(Opportunity)).all()
+    opportunities = session.exec(
+        select(Opportunity).where(Opportunity.user_id == user.id)
+    ).all()
     by_status = {s: 0 for s in ACTIVE_STATUSES + ARCHIVED_STATUSES}
     for opp in opportunities:
         by_status[opp.status] = by_status.get(opp.status, 0) + 1
@@ -212,6 +240,7 @@ def stats(session: Session = Depends(get_session)):
     soon = now + timedelta(days=7)
     upcoming = session.exec(
         select(InterviewRound).where(
+            InterviewRound.user_id == user.id,
             col(InterviewRound.scheduled_at) >= now,
             col(InterviewRound.scheduled_at) <= soon,
             col(InterviewRound.result) == ROUND_PENDING,

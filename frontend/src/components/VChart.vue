@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts/core'
-import { BarChart, FunnelChart, PieChart, RadarChart } from 'echarts/charts'
+import { BarChart, FunnelChart, LineChart, PieChart, RadarChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { EChartsCoreOption } from 'echarts/core'
@@ -10,6 +10,7 @@ echarts.use([
   CanvasRenderer,
   BarChart,
   FunnelChart,
+  LineChart,
   PieChart,
   RadarChart,
   GridComponent,

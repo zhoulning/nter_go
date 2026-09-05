@@ -11,8 +11,10 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.asr import probe_duration, transcribe_cloud, transcribe_local
+from app.auth import get_current_user
 from app.database import DATA_DIR, engine, get_session
-from app.models import InterviewRound, Opportunity, Recording, ReviewReport, Resume
+from app.kb import search_knowledge_base
+from app.models import InterviewRound, Opportunity, Recording, ReviewReport, Resume, User
 from app.review import build_review, polish_transcript
 from app.routers.ai import _call_llm, _parse_json_loose
 from app.routers.settings import get_ai_config, get_asr_config
@@ -26,7 +28,7 @@ MAX_SIZE = 200 * 1024 * 1024
 
 ROUND_LABELS = {
     "written": "笔试", "first": "一面", "second": "二面", "third": "三面",
-    "cross": "交叉面", "hr": "HR面", "other": "面试",
+    "comprehensive": "综合面", "hr": "HR面", "other": "面试",
 }
 
 # 进程内任务表：防止同一录音并发起转写/复盘任务
@@ -87,9 +89,9 @@ def _rec_dict(
     return data
 
 
-def _get_or_404(session: Session, recording_id: int) -> Recording:
+def _get_or_404(session: Session, recording_id: int, user: User) -> Recording:
     rec = session.get(Recording, recording_id)
-    if rec is None:
+    if rec is None or rec.user_id != user.id:
         raise HTTPException(status_code=404, detail="录音不存在")
     return rec
 
@@ -99,23 +101,26 @@ async def upload_recording(
     file: UploadFile = File(...),
     opportunity_id: int = Form(...),
     round_id: Optional[int] = Form(None),
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
     opp = session.get(Opportunity, opportunity_id)
-    if opp is None:
+    if opp is None or opp.user_id != user.id:
         raise HTTPException(status_code=404, detail="岗位不存在")
     round_ = None
     if round_id:
         round_ = session.get(InterviewRound, round_id)
-        if round_ is None or round_.opportunity_id != opportunity_id:
+        if round_ is None or round_.user_id != user.id or round_.opportunity_id != opportunity_id:
             raise HTTPException(status_code=400, detail="轮次与岗位不匹配")
 
     ext = Path(file.filename or "audio.mp3").suffix.lower() or ".mp3"
     if ext not in ALLOWED_EXTS:
         raise HTTPException(status_code=400, detail=f"不支持的音频格式：{ext}")
 
+    user_dir = UPLOAD_DIR / f"u{user.id}"  # 录音文件按用户分目录
+    user_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    filepath = UPLOAD_DIR / f"rec_{ts}{ext}"
+    filepath = user_dir / f"rec_{ts}{ext}"
     size = 0
     try:
         with open(filepath, "wb") as out:
@@ -137,6 +142,7 @@ async def upload_recording(
         ext=ext,
         size=size,
         duration_sec=probe_duration(filepath),
+        user_id=user.id,
     )
     session.add(rec)
     session.commit()
@@ -145,11 +151,24 @@ async def upload_recording(
 
 
 @router.get("/recordings")
-def list_recordings(session: Session = Depends(get_session)):
-    recordings = session.exec(select(Recording).order_by(Recording.created_at.desc())).all()
-    opps = {o.id: o for o in session.exec(select(Opportunity)).all()}
-    rounds = {r.id: r for r in session.exec(select(InterviewRound)).all()}
-    reports = {r.recording_id: r for r in session.exec(select(ReviewReport)).all()}
+def list_recordings(
+    user: User = Depends(get_current_user), session: Session = Depends(get_session)
+):
+    recordings = session.exec(
+        select(Recording)
+        .where(Recording.user_id == user.id)
+        .order_by(Recording.created_at.desc())
+    ).all()
+    opps = {
+        o.id: o for o in session.exec(select(Opportunity).where(Opportunity.user_id == user.id)).all()
+    }
+    rounds = {
+        r.id: r for r in session.exec(select(InterviewRound).where(InterviewRound.user_id == user.id)).all()
+    }
+    reports = {
+        r.recording_id: r
+        for r in session.exec(select(ReviewReport).where(ReviewReport.user_id == user.id)).all()
+    }
     return {
         "items": [
             _rec_dict(rec, opps.get(rec.opportunity_id), rounds.get(rec.round_id), reports.get(rec.id))
@@ -160,8 +179,12 @@ def list_recordings(session: Session = Depends(get_session)):
 
 
 @router.get("/recordings/{recording_id}")
-def get_recording(recording_id: int, session: Session = Depends(get_session)):
-    rec = _get_or_404(session, recording_id)
+def get_recording(
+    recording_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    rec = _get_or_404(session, recording_id, user)
     opp = session.get(Opportunity, rec.opportunity_id)
     round_ = session.get(InterviewRound, rec.round_id) if rec.round_id else None
     review = session.exec(
@@ -186,9 +209,13 @@ def get_recording(recording_id: int, session: Session = Depends(get_session)):
 
 
 @router.get("/recordings/{recording_id}/file")
-def download_recording(recording_id: int, session: Session = Depends(get_session)):
+def download_recording(
+    recording_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
     """下载原始录音文件。"""
-    rec = _get_or_404(session, recording_id)
+    rec = _get_or_404(session, recording_id, user)
     if rec.kind == "text":
         raise HTTPException(status_code=400, detail="文字复盘没有录音文件")
     path = Path(rec.filepath)
@@ -198,8 +225,12 @@ def download_recording(recording_id: int, session: Session = Depends(get_session
 
 
 @router.delete("/recordings/{recording_id}")
-def delete_recording(recording_id: int, session: Session = Depends(get_session)):
-    rec = _get_or_404(session, recording_id)
+def delete_recording(
+    recording_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    rec = _get_or_404(session, recording_id, user)
     report = session.exec(
         select(ReviewReport).where(ReviewReport.recording_id == recording_id)
     ).first()
@@ -219,15 +250,19 @@ class TextReviewCreate(BaseModel):
 
 
 @router.post("/recordings/text")
-def create_text_review(body: TextReviewCreate, session: Session = Depends(get_session)):
+def create_text_review(
+    body: TextReviewCreate,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
     """创建文字复盘（现场面试等无录音场景，直接基于文字稿生成报告）。"""
     opp = session.get(Opportunity, body.opportunity_id)
-    if opp is None:
+    if opp is None or opp.user_id != user.id:
         raise HTTPException(status_code=404, detail="机会不存在")
     round_ = None
     if body.round_id:
         round_ = session.get(InterviewRound, body.round_id)
-        if round_ is None or round_.opportunity_id != body.opportunity_id:
+        if round_ is None or round_.user_id != user.id or round_.opportunity_id != body.opportunity_id:
             raise HTTPException(status_code=400, detail="轮次与机会不匹配")
     text = body.transcript.strip()
     if len(text) < 10:
@@ -245,6 +280,7 @@ def create_text_review(body: TextReviewCreate, session: Session = Depends(get_se
         transcript_engine="manual",
         status="transcribed",
         progress=100,
+        user_id=user.id,
     )
     session.add(rec)
     session.commit()
@@ -258,8 +294,13 @@ class TranscriptUpdate(BaseModel):
 
 
 @router.put("/recordings/{recording_id}/transcript")
-def save_transcript(recording_id: int, body: TranscriptUpdate, session: Session = Depends(get_session)):
-    rec = _get_or_404(session, recording_id)
+def save_transcript(
+    recording_id: int,
+    body: TranscriptUpdate,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    rec = _get_or_404(session, recording_id, user)
     value = body.transcript.strip() or None
     if body.target == "clean":
         rec.transcript_clean = value
@@ -286,8 +327,13 @@ class TranscribeRequest(BaseModel):
 
 
 @router.post("/recordings/{recording_id}/transcribe")
-def transcribe_recording(recording_id: int, body: TranscribeRequest, session: Session = Depends(get_session)):
-    rec = _get_or_404(session, recording_id)
+def transcribe_recording(
+    recording_id: int,
+    body: TranscribeRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    rec = _get_or_404(session, recording_id, user)
     if rec.status == "transcribing":
         raise HTTPException(status_code=400, detail="该录音正在转写中")
     if body.engine not in ("local", "cloud"):
@@ -373,14 +419,19 @@ class ReviewRequest(BaseModel):
 
 
 @router.post("/recordings/{recording_id}/review")
-def generate_review(recording_id: int, body: ReviewRequest, session: Session = Depends(get_session)):
-    rec = _get_or_404(session, recording_id)
+def generate_review(
+    recording_id: int,
+    body: ReviewRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    rec = _get_or_404(session, recording_id, user)
     if not rec.transcript:
         raise HTTPException(status_code=400, detail="该录音还没有文字稿，请先转写或手动粘贴")
     if rec.review_status == "running":
         raise HTTPException(status_code=400, detail="复盘报告正在生成中")
     opp = session.get(Opportunity, rec.opportunity_id)
-    if opp is None:
+    if opp is None or opp.user_id != user.id:
         raise HTTPException(status_code=404, detail="岗位不存在")
 
     ai_cfg = get_ai_config(session)
@@ -390,7 +441,7 @@ def generate_review(recording_id: int, body: ReviewRequest, session: Session = D
     resume_id = body.resume_id if body.resume_id is not None else opp.resume_id
     if resume_id is not None:
         resume = session.get(Resume, resume_id)
-        if resume is None:
+        if resume is None or resume.user_id != user.id:
             resume_id = None
 
     rec.review_status = "running"
@@ -428,6 +479,23 @@ def _review_worker(
             resume = session.get(Resume, resume_id)
             resume_text = resume.text or ""
 
+        # 知识库片段：按文字稿开头 + 岗位关键词检索，供 improved / 点评参考（失败不阻塞复盘）
+        transcript_head = ((rec.transcript_clean or rec.transcript) or "")[:600]
+        try:
+            kb_hits = (
+                search_knowledge_base(session, f"{transcript_head} {opp.company} {opp.position}")
+                if transcript_head.strip()
+                else []
+            )
+        except Exception:
+            kb_hits = []
+        if kb_hits:
+            kb_text = "\n".join(
+                f"[{i}] 来源 {h['source']}\n{h['text']}" for i, h in enumerate(kb_hits, 1)
+            )[:2400]
+        else:
+            kb_text = "（未配置知识库或未检索到相关笔记，忽略本节）"
+
         report = build_review(
             base_url, model, api_key,
             company=opp.company,
@@ -436,13 +504,14 @@ def _review_worker(
             jd_text=opp.jd_text or "",
             resume_text=resume_text,
             transcript=(rec.transcript_clean or rec.transcript) or "",
+            kb_text=kb_text,
         )
 
         existing = session.exec(
             select(ReviewReport).where(ReviewReport.recording_id == recording_id)
         ).first()
         if existing is None:
-            existing = ReviewReport(recording_id=recording_id)
+            existing = ReviewReport(recording_id=recording_id, user_id=rec.user_id)
         existing.model = model
         existing.resume_id = resume_id
         existing.report = json.dumps(report, ensure_ascii=False)
@@ -468,8 +537,12 @@ def _review_worker(
 
 
 @router.post("/recordings/{recording_id}/polish")
-def polish_recording(recording_id: int, session: Session = Depends(get_session)):
-    rec = _get_or_404(session, recording_id)
+def polish_recording(
+    recording_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    rec = _get_or_404(session, recording_id, user)
     if not rec.transcript:
         raise HTTPException(status_code=400, detail="该录音还没有原始文字稿，请先转写或手动粘贴")
     if rec.polish_status == "running":

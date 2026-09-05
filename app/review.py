@@ -1,5 +1,5 @@
 """AI 复盘报告生成：切题、逐题点评、JD 对照、行动清单。"""
-from app.routers.ai import _call_llm, _parse_json_loose
+from app.routers.ai import ANSWER_STANDARD, _call_llm, _parse_json_loose
 
 # 超过该长度的文字稿走两阶段 map-reduce，否则单次直出
 SINGLE_PASS_LIMIT = 50000
@@ -53,6 +53,7 @@ def build_review(
     jd_text: str,
     resume_text: str,
     transcript: str,
+    kb_text: str = "",
 ) -> dict:
     """生成结构化复盘报告；超长文字稿自动走两阶段 map-reduce。"""
     jd = jd_text.strip() or "（未填写工作描述）"
@@ -99,12 +100,16 @@ def build_review(
 【候选人简历要点】
 {resume}
 
+【知识库笔记】（候选人自己的复习笔记，点评与 improved 优先参考其中与题目相关的要点）
+{kb_text}
+
 【面试转写文字稿】
 {body}
 
 要求：
 1. 文字稿中面试官与候选人交替发言，请按语言特征准确区分，只把「面试官提出的实际问题」收入 questions，按出现顺序完整覆盖，不要遗漏闲聊寒暄。
-2. 逐题点评要具体到候选人原话，评分严格 1-5；reference 给出该题的标准答题要点；improved 给出结合候选人经历的更好回答示范。
+2. 逐题点评要具体到候选人原话，评分严格 1-5；reference 给出该题的标准答题要点；improved 给出结合候选人经历的更好回答示范，格式遵守全站统一的口述版答案标准（纯知识题直接给知识要点与答题结构，不生硬套项目）：
+{ANSWER_STANDARD}
 3. jd_match 对照上面的 JD 逐条判断展示情况。
 4. questions_for_bank 收录值得沉淀的真实面试题（含维度与难度）。
 5. 只输出一个 JSON 对象，不要输出任何其他文字。结构如下：
